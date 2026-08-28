@@ -60,8 +60,8 @@
     {"id": "F13", "name": "Menu Apps Script + onOpen + trigger instalable standalone", "status": "YELLOW", "verified_by": "codigo escrito; requiere ejecucion humana autorizada en el Sheet real (BOUND_SCRIPT_GATE)"},
     {"id": "F14", "name": "BigQueryGateway ejecucion real contra Carmen Gold", "status": "RED", "verified_by": "IAM_BLOCKED, ver gates"},
     {"id": "F15", "name": "Historico Google Sheet nativo idempotente", "status": "YELLOW", "verified_by": "codigo escrito; requiere ejecucion live (Drive+Sheets) no disponible desde CLI"},
-    {"id": "F16", "name": "clasp push + verificacion post-push", "status": "PENDING"},
-    {"id": "F17", "name": "clasp run diagnostico headless", "status": "PENDING"},
+    {"id": "F16", "name": "clasp push + verificacion post-push", "status": "GREEN", "verified_by": "clasp push --force (manifest cambio, ver D18-push); clone a directorio temporal fuera del repo, diff byte a byte 23/23 archivos identicos"},
+    {"id": "F17", "name": "clasp run diagnostico headless", "status": "RED", "verified_by": "RUNTIME_CLI_TEST=BLOCKED; 'Exception: ...storage. Error code NOT_FOUND' con y sin --nondev; causa: sin proyecto GCP estandar vinculado (ver D18)"},
     {"id": "F18", "name": "Git commits + push rama Pairings_WB", "status": "PENDING"},
     {"id": "F19", "name": "Revision adversarial independiente (Seccion 44)", "status": "GREEN", "verified_by": "/code-review high (7 sub-agentes); 9 bugs reales corregidos, 1 hallazgo confirmado como diseno intencional (Seccion 7), ver D17"}
   ]

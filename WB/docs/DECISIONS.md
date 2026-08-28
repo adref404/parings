@@ -47,6 +47,14 @@ Dada la advertencia explícita de la Sección 21 contra `new Date(string)` y el 
 ## D15. "Vuelos" y "Cronograma" se reconstruyen con layout explícito propio, no restaurado
 No se pudo leer en vivo (D4) el layout EXACTO previo de `Vuelos`/`Cronograma`. En vez de arriesgar restaurar posiciones físicas heredadas (prohibido explícitamente en la Sección 22: nada de dependencias tipo R5/R14/R23), `FlightsRenderer`/`ScheduleRenderer` generan una estructura leg-level y una grilla de calendario explícitas y auto-descriptivas, siempre reconstruidas por completo en cada cálculo (son OUTPUT puro, sin dato humano). `Diagnóstico del sistema` reporta si la hoja existente tenía una estructura distinta ANTES de que un cálculo productivo la sobrescriba, para que el usuario lo note.
 
+## D18. `clasp run` está bloqueado para este proyecto (RUNTIME_CLI_TEST = BLOCKED)
+Tras el push verificado (23/23 archivos idénticos via clone a un directorio temporal), se probó `clasp.cmd run wbDiagnosticoHeadless` (función sin dependencia de `SpreadsheetApp.getUi()`, pensada exactamente para esto) y también con `--nondev`. Ambos intentos devuelven:
+```
+Exception: We're sorry, a server error occurred while reading from storage. Error code NOT_FOUND. []
+```
+Esto es consistente con el hallazgo ya documentado en el AUDIT inicial: `clasp.cmd apis` (list-apis) falló con `"GCP project ID is not set, unable to continue"` — este script de Apps Script usa el proyecto de Cloud oculto/automático que Google crea por defecto, no un proyecto GCP estándar vinculado explícitamente. La API de ejecución de Apps Script (`scripts.run`, que es lo que usa `clasp run`) requiere esa vinculación estándar para poder leer el código fuente publicado y ejecutarlo bajo la identidad autorizada. Vincular un proyecto GCP estándar es un cambio de configuración en Google Cloud Console/configuración del proyecto de Apps Script que excede lo que se puede hacer de forma segura y no destructiva desde este CLI, y no se intentó forzarlo.
+**Conclusión honesta:** el código fue subido y verificado byte a byte contra el remoto, pero su ejecución real (incluso la de una función de diagnóstico sin efectos secundarios) no pudo confirmarse desde Claude Code. Solo puede verificarse abriendo el Spreadsheet en el navegador, autorizando el script, y usando el menú "Pairings WB" (una vez completado el paso manual de `configurarMenuPairingsWB()`, D2).
+
 ## D17. Revisión adversarial (`/code-review high`, Sección 44) — hallazgos y resolución
 Se ejecutó un reviewer independiente (7 sub-agentes en paralelo: diff lineal, auditor de comportamiento removido, trazador cross-file, y buscadores de reuse/simplification/efficiency/altitude) sobre el diff completo antes del primer commit funcional. Reportó 10 hallazgos; se verificó cada uno contra la misión y el código real antes de decidir:
 
