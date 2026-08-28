@@ -1,0 +1,8 @@
+{
+  "name": "pairings-wb",
+  "private": true,
+  "description": "Pruebas locales de logica pura de Pairings WB (Apps Script). No se publica ni se sube a Apps Script.",
+  "scripts": {
+    "test": "node --test"
+  }
+}

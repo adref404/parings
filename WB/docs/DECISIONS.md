@@ -1,0 +1,72 @@
+# Decisiones — Pairings WB
+
+## D1. Fuente productiva
+`operations-data-prod.carmen_gold.crew_pairing_carmen_system` (ver Sección 3 del prompt maestro). No se reabre la discusión Performance_VOM. Confirmado LIVE vía `bigquery.tables.get`: 38.729.643 filas, particionado `MONTH(pairing_start_date)`, clustered `crew_base_code`, 84 columnas — todas las columnas exigidas en la Sección 11 existen tal cual.
+
+## D2. BOUND_SCRIPT_GATE = FAIL
+El Apps Script (`1IFvtE2...`) es **standalone** (`parentId` vacío al consultar `script.googleapis.com/v1/projects/{id}`). No se convierte a bound (prohibido por la misión) ni se crea otro proyecto.
+**Mitigación implementada:** trigger instalable `ScriptApp.newTrigger(...).forSpreadsheet(EXPECTED_SPREADSHEET_ID).onOpen().create()`, registrado una única vez por `configurarMenuPairingsWB()`. Este patrón es soportado oficialmente por Apps Script para scripts standalone que necesitan reaccionar a la apertura de un Spreadsheet externo — el handler recibe contexto de UI de ESA hoja (`SpreadsheetApp.getUi()` funciona dentro del trigger instalable).
+**Limitación real:** la primera activación de un trigger instalable exige una autorización OAuth interactiva en navegador (correr `configurarMenuPairingsWB` una vez desde el editor de Apps Script). Ningún CLI headless puede completar ese consentimiento por la persona. Por eso `MENU_STATUS` no puede certificarse como `PASS` runtime-verified desde Claude Code.
+
+## D3. Bloqueo IAM de BigQuery jobs.create
+Con el token OAuth de clasp (identidad `erick.obradovich@latam.com`, scope `cloud-platform` incluido) se probó `jobs.query` (dry run) contra `operations-data-prod` → `403 PERMISSION_DENIED: User does not have bigquery.jobs.create permission in project operations-data-prod`. Se probó además usando `so-cm-opanalytics-dev` únicamente como proyecto de facturación del job (la tabla origen consultada seguía siendo `carmen_gold`, sin cambiar de fuente) → mismo error. Confirmado que sí existe lectura de metadata (`tables.get` 200 OK), pero no rol de ejecución de jobs en ningún proyecto probado.
+**No se trabaja alrededor de esto.** Se documenta como bloqueo real de IAM. La ejecución productiva end-to-end del `BigQueryGateway` queda pendiente de que un administrador otorgue `roles/bigquery.jobUser` (o superior) sobre algún proyecto a la cuenta que autorice el script en producción.
+
+## D4. Sin lectura LIVE de Sheets desde CLI
+El token de clasp no trae scope `spreadsheets`/`drive.readonly` y el proyecto GCP asociado a clasp tiene la Sheets API deshabilitada — confirmado con `sheets.googleapis.com` → 403 `SERVICE_DISABLED`. Por tanto no se pudo leer en vivo `_CONFIG`/`RESUMEN`/pestañas actuales desde Claude Code. Sí se confirmó vía Drive metadata (scope `drive.metadata.readonly`, que clasp sí trae) que el Spreadsheet ID/nombre/carpetas coinciden exactamente con lo declarado en la misión.
+**Mitigación:** todo el código usa `SpreadsheetApp.openById(EXPECTED_SPREADSHEET_ID)` (nunca `getActiveSpreadsheet()`), y el menú incluye "Diagnóstico del sistema", que al ejecutarse dentro del Sheet real (autorizado por el usuario) compara la estructura live contra lo esperado y reporta diferencias sin sobrescribir nada. Esa verificación queda pendiente de ejecución humana.
+
+## D5. `fleet_type_code` no se fija ciegamente
+El perfil de columna muestra valores distintos `NB, WB, B787, B767, E02, B777, A350` para `fleet_type_code`. No se pudo confirmar en vivo (bloqueo D3) cuál corresponde exactamente a `subsidiary_code=LP` + `subfleet_code=763`. La consulta SQL productiva filtra por `subsidiary_code, crew_base_code, crew_range_type_code, subfleet_code, reference_year, reference_month_number` (todos confirmados) y **reporta** `fleet_type_code` observado en el descubrimiento de snapshots en vez de asumirlo, dejando que `FLEET_SCOPE` de `_CONFIG` se use como filtro informativo/validación, no como filtro ciego que podría devolver 0 filas si el valor real difiere.
+
+## D6. `ALLOWED_OCCUPIED_DOW` se ancla a `occupied_start_date`
+La configuración ya trae `ALLOWED_OCCUPIED_DOW = MON,TUE,WED,THU,FRI`, pero no especifica sobre qué fecha se evalúa. Se ancla al día de semana de `occupied_start_date` (el día en que el instructor queda comprometido), coherente con el criterio ya usado en el benchmark legacy (`generar_reporte_pairings.py`, que evaluaba el día de semana de inicio) y con la Sección 10 (occupied_start deriva de duty). No es una regla nueva: solo fija el campo de referencia de una regla que la misión ya definió.
+
+## D7. Hash de contenido: SHA-256 puro en JS (sin `Utilities.computeDigest`)
+Para que `pairing_content_hash`, `snapshot_key`, `history_key` y `config_hash` sean **bit-idénticos** entre las pruebas Node y la ejecución real en Apps Script V8, se implementó SHA-256 en JS puro (`10_Hash.js`) en vez de depender de `Utilities.computeDigest` (que no existe en Node). Es determinista, sin propiedades de seguridad criptográfica requeridas para este uso (identidad de contenido, no seguridad).
+
+## D8. BP calculado en memoria, no como fórmula de hoja
+`RESUMEN.K` (BP) se calcula en Apps Script (lookup contra `Diccionario` ya leído en memoria) y se escribe como **valor**, no como fórmula `VLOOKUP`. Evita el problema de separador de fórmula dependiente de locale (`,` vs `;`) y elimina por diseño el riesgo de `#N/A` cuando `INS` está vacío (Q20).
+
+## D9. Copia de Drive como mecanismo de histórico
+El histórico se crea con `SpreadsheetApp.openById(PROD_ID).copy(nombre)` movido a la carpeta de históricos, con todas las hojas "congeladas" a valores (`getValues()` → `setValues()` sobre sí mismas). Al ser el script **standalone** (D2), la copia de Drive **no** arrastra ninguna automatización (los triggers instalables viven en el proyecto de script, no en el archivo), por lo que el requisito "sin automatización activa en el histórico" se cumple estructuralmente, sin pasos de limpieza adicionales.
+
+## D11. `checkOccupiedDays`/config sin ventana de ocupación no es elegible por defecto
+Si `occupied_source = MISSING` (no hay ni datos de duty ni de vuelo para fijar la ventana), el pairing **no** se marca elegible por omisión: pasa a `REVIEW` con motivo `OCCUPIED_WINDOW_MISSING`. Evita que un dato incompleto se cuele como aprobado.
+
+## D12. Semántica exacta de `REVIEW_SOURCE_CHANGED` (Sección 19)
+El texto de la Sección 19 para este caso es más escueto que para `ACTIVE`/`RELINKED_IDENTICAL` (no repite explícitamente "preservar assignment_id/INS/ACT"). Interpretación implementada, la más conservadora y auditable: la fila vieja **se conserva intacta** (assignment_id, INS, ACT, y su puntero a `pairing_instance_key`/`source_snapshot_key`/`pairing_content_hash` **originales**, sin relinkear), solo cambia su `assignment_status` a `REVIEW_SOURCE_CHANGED` para alertar. El pairing del snapshot nuevo con el contenido cambiado, al no haber sido "reclamado" por ninguna fila previa, aparece **además** como una fila `NEW` independiente (assignment_id nuevo, INS/ACT en blanco). Resultado: ambas versiones quedan visibles y nada se pierde ni se fusiona en silencio; un humano decide si reutiliza la asignación vieja sobre el pairing nuevo. Ver `40_Reconciliation.js`.
+
+## D13. Solo pairings ELIGIBLE entran a RESUMEN; los REVIEW no generan fila
+El esquema fijo de `RESUMEN` (A:O, Sección 7) no tiene columna de `eligibility_status`: es la tabla de **asignaciones**, no de candidatos en revisión. Por eso `SummaryRenderer.build` filtra a `eligibility_status=ELIGIBLE` antes de pasar los pairings a `AssignmentReconciler`. Los pairings en `REVIEW` quedan completamente documentados en `_PAIRINGS_DATA` (con `eligibility_reason`) y se cuentan en `_RUNS.pairings_review`, pero no ensucian la tabla operacional.
+**Caso límite aceptado:** si un pairing que antes era `ACTIVE` deja de ser elegible en un recálculo (p.ej. cambia una regla WB), su fila cae en `ORPHANED_SOURCE_MISSING` (no hay un 6º estado para esto en la Sección 19) — preserva INS/ACT y queda visiblemente marcada para revisión humana, sin inventar un estado no especificado por la misión.
+
+## D14. Fecha/Inicio/Fin como TEXTO "DD/MM/YYYY", nunca `Date` nativo
+Dada la advertencia explícita de la Sección 21 contra `new Date(string)` y el riesgo de que un 30/09 se corra a 29/09 o 01/10, `RESUMEN.Fecha/Inicio/Fin` se escriben como texto formateado con los helpers puros de `05_DateUtil.js` (`duFormatDisplay`), nunca como objeto `Date` de Apps Script. Se sacrifica el ordenamiento nativo por fecha (se ordena por `pairing_instance_key`) a cambio de cero riesgo de drift, dado que no pude verificar en vivo (D4) el comportamiento real de timezone del Spreadsheet.
+
+## D15. "Vuelos" y "Cronograma" se reconstruyen con layout explícito propio, no restaurado
+No se pudo leer en vivo (D4) el layout EXACTO previo de `Vuelos`/`Cronograma`. En vez de arriesgar restaurar posiciones físicas heredadas (prohibido explícitamente en la Sección 22: nada de dependencias tipo R5/R14/R23), `FlightsRenderer`/`ScheduleRenderer` generan una estructura leg-level y una grilla de calendario explícitas y auto-descriptivas, siempre reconstruidas por completo en cada cálculo (son OUTPUT puro, sin dato humano). `Diagnóstico del sistema` reporta si la hoja existente tenía una estructura distinta ANTES de que un cálculo productivo la sobrescriba, para que el usuario lo note.
+
+## D17. Revisión adversarial (`/code-review high`, Sección 44) — hallazgos y resolución
+Se ejecutó un reviewer independiente (7 sub-agentes en paralelo: diff lineal, auditor de comportamiento removido, trazador cross-file, y buscadores de reuse/simplification/efficiency/altitude) sobre el diff completo antes del primer commit funcional. Reportó 10 hallazgos; se verificó cada uno contra la misión y el código real antes de decidir:
+
+**Corregidos (bugs reales):**
+1. `RESUMEN` se ordenaba por `pairing_instance_key` (hash) en vez de por Fecha, contradiciendo su propio comentario → ahora ordena por la fecha real (reparseando el texto DD/MM/YYYY solo para ordenar, ver D14).
+2. `ConfigService.ensureDefaults` reescribía **todo** `_CONFIG` en cada llamada (incluso desde diagnósticos de solo lectura) → ahora usa `computeConfigBootstrapPlan` (pura, testeada) y no toca la hoja si no falta nada; cuando sí escribe, limpia solo A:C, no la hoja entera.
+3. `recordRun` usaba `valor || ''`, convirtiendo conteos legítimos en `0` a texto vacío en `_RUNS` → helper `orBlank()` que solo trata `undefined`/`null` como ausente.
+4. `ScheduleRenderer` podía generar índices de columna negativos si el rango real de un pairing caía fuera de la cota de seguridad de ±31 días → cada bloque se acota ahora a `[0, dateColumns.length-1]`; si cae totalmente fuera, se excluye en vez de corromper la grilla.
+5. Filas `REVIEW_SOURCE_CHANGED`/`ORPHANED_SOURCE_MISSING` dejaban Fecha/Vuelo/Ruta/Inicio/Fin en blanco pese a que D12 promete conservar la fila intacta → `mergeRow` ahora propaga `previousDisplay` (los valores que ya estaban escritos) y `buildResumenRowArray` los usa cuando no hay pairing actual.
+6. `legSortKey` tenía un fallback a `flight_departure_local_time`, campo que `BQ_REQUIRED_FIELDS` nunca proyecta (código muerto que aparentaba una robustez inexistente) → eliminado, documentado el límite real.
+7. `isSnapshotCertified(config, allowPreview=true)` ignoraba por completo si `LOAD_KEY_ID` seguía siendo el centinela `'PENDING_CERTIFICATION'`, permitiendo un "preview" silencioso contra una identidad inexistente (0 filas, QA en verde, sin avisar que nunca se certificó nada) → ahora el preview solo bypasea el requisito de estado `CERTIFIED`, nunca la existencia de una identidad real.
+8. `BigQueryGateway.runQuery` lanzaba una excepción interna ante un esquema incompleto, haciendo que el gate `Q4` del orquestador (pensado para reportar `QA_FAILED` de forma estructurada) nunca se ejecutara para ese caso exacto → la validación de esquema quedó como responsabilidad exclusiva del llamador.
+9. `Q14` (compatibilidad de esquema de `_PAIRINGS_DATA`) y `Q17` (cero drift de fecha) estaban implementados y probados pero nunca se invocaban desde `Orchestrator.runPipeline` → ahora corren en cada preview/publish, sobre datos reales recién recibidos de BigQuery.
+
+**Evaluado y confirmado como comportamiento INTENCIONAL (no se cambió):**
+10. "Case B (`RELINKED_IDENTICAL`) puede asignar el mismo pairing actual a dos `assignment_id` previos distintos" — la Sección 7 exige explícitamente `"Un mismo pairing puede tener múltiples assignment_id. No colapses multiplicidades."`. Esto también aplica al re-link entre snapshots, no solo a la re-ejecución del mismo snapshot (ya cubierta por un test previo). Se agregó un test de regresión explícito para el caso cross-snapshot en `tests/reconciliation.test.js` para que quede documentado como diseño, no como bug.
+
+**Decisión de alcance — Q16 es un gate de DEPLOY-TIME, no de runtime:** `Q16NbContaminationZero` escanea el CÓDIGO FUENTE de las reglas WB en busca de tokens NB. El código fuente de un despliegue ya subido no cambia entre ejecuciones del pipeline, por lo que invocarlo en cada `runPipeline` no aportaría señal nueva y exigiría que el script leyera su propio contenido publicado vía Drive API (complejidad sin beneficio real). Ya se ejecuta como test obligatorio (`node --test`, sección "Q16" en `tests/qa.test.js`) dentro del preflight de cada `clasp push` — que es precisamente el momento en que el código fuente SI puede cambiar.
+
+**Diseño aceptado — gate de QA en dos niveles:** Q1/Q2/Q3/Q5/Q6/Q7/Q4 son precondiciones "duras" que lanzan una excepción inmediata (`failFastIfBlocked`) y terminan el run con `status=ERROR` en `_RUNS`; Q8/Q9/Q10/Q11/Q12/Q13/Q14/Q15/Q17 son verificaciones "blandas" que se acumulan y producen `status=QA_FAILED` con el reporte completo si alguna falla. Ambos caminos bloquean la escritura por igual y registran el motivo exacto en `_RUNS.error_message` o en el `qa[]` estructurado — la diferencia es solo de presentación, no de seguridad.
+
+## D10. Layout de `_CONFIG` no verificable en vivo (D4)
+Se documenta el formato que `ConfigService` espera (clave/valor en columnas A:B desde la fila 1, bloque de rutas bajo una fila marcadora `ROUTES` con columnas CODE/PRIORITY/ROLE) y se implementa `diagnosticoDelSistema()` para reportar en vivo cualquier discrepancia contra este formato sin sobrescribir. Si el layout real difiere, el diagnóstico lo mostrará explícitamente en vez de fallar en silencio.

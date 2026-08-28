@@ -1,0 +1,440 @@
+{
+  "captured_at": "2026-08-28",
+  "captured_via": "bigquery.googleapis.com/bigquery/v2 tables.get (solo lectura de metadata, sin ejecutar jobs)",
+  "project": "operations-data-prod",
+  "dataset": "carmen_gold",
+  "table": "crew_pairing_carmen_system",
+  "numRows": "38729643",
+  "numBytes": "21907921912",
+  "timePartitioning": {
+    "type": "MONTH",
+    "field": "pairing_start_date"
+  },
+  "clustering": {
+    "fields": [
+      "crew_base_code"
+    ]
+  },
+  "fields": [
+    {
+      "name": "pairing_id",
+      "type": "INTEGER",
+      "mode": "NULLABLE"
+    },
+    {
+      "name": "pairing_days_quantity",
+      "type": "INTEGER",
+      "mode": "NULLABLE"
+    },
+    {
+      "name": "pairing_name",
+      "type": "STRING",
+      "mode": "NULLABLE"
+    },
+    {
+      "name": "crew_base_code",
+      "type": "STRING",
+      "mode": "NULLABLE"
+    },
+    {
+      "name": "pairing_start_date",
+      "type": "DATE",
+      "mode": "NULLABLE"
+    },
+    {
+      "name": "pairing_start_time",
+      "type": "TIME",
+      "mode": "NULLABLE"
+    },
+    {
+      "name": "pairing_end_date",
+      "type": "DATE",
+      "mode": "NULLABLE"
+    },
+    {
+      "name": "pairing_end_time",
+      "type": "TIME",
+      "mode": "NULLABLE"
+    },
+    {
+      "name": "is_pairing_start_leg",
+      "type": "INTEGER",
+      "mode": "NULLABLE"
+    },
+    {
+      "name": "pairing_end_leg_indicator",
+      "type": "INTEGER",
+      "mode": "NULLABLE"
+    },
+    {
+      "name": "flight_start_date_local_time",
+      "type": "DATE",
+      "mode": "NULLABLE"
+    },
+    {
+      "name": "flight_month_description",
+      "type": "STRING",
+      "mode": "NULLABLE"
+    },
+    {
+      "name": "flight_quarter_code",
+      "type": "STRING",
+      "mode": "NULLABLE"
+    },
+    {
+      "name": "carrier_code",
+      "type": "STRING",
+      "mode": "NULLABLE"
+    },
+    {
+      "name": "flight_number",
+      "type": "STRING",
+      "mode": "NULLABLE"
+    },
+    {
+      "name": "departure_airport_code",
+      "type": "STRING",
+      "mode": "NULLABLE"
+    },
+    {
+      "name": "arrival_airport_code",
+      "type": "STRING",
+      "mode": "NULLABLE"
+    },
+    {
+      "name": "route_airport_key",
+      "type": "STRING",
+      "mode": "NULLABLE"
+    },
+    {
+      "name": "flight_departure_time_crew_base",
+      "type": "TIME",
+      "mode": "NULLABLE"
+    },
+    {
+      "name": "flight_arrival_hour_block_time",
+      "type": "TIME",
+      "mode": "NULLABLE"
+    },
+    {
+      "name": "flight_departure_local_time",
+      "type": "TIME",
+      "mode": "NULLABLE"
+    },
+    {
+      "name": "flight_arrival_time_lt",
+      "type": "TIME",
+      "mode": "NULLABLE"
+    },
+    {
+      "name": "flight_departure_time_utc",
+      "type": "TIME",
+      "mode": "NULLABLE"
+    },
+    {
+      "name": "flight_arrival_time_utc",
+      "type": "TIME",
+      "mode": "NULLABLE"
+    },
+    {
+      "name": "is_crew_passenger",
+      "type": "STRING",
+      "mode": "NULLABLE"
+    },
+    {
+      "name": "subfleet_code",
+      "type": "STRING",
+      "mode": "NULLABLE"
+    },
+    {
+      "name": "arrival_base_indicator",
+      "type": "STRING",
+      "mode": "NULLABLE"
+    },
+    {
+      "name": "is_base_touch_indicator",
+      "type": "STRING",
+      "mode": "NULLABLE"
+    },
+    {
+      "name": "briefing_time",
+      "type": "TIME",
+      "mode": "NULLABLE"
+    },
+    {
+      "name": "flight_block_time",
+      "type": "TIME",
+      "mode": "NULLABLE"
+    },
+    {
+      "name": "connection_time",
+      "type": "STRING",
+      "mode": "NULLABLE"
+    },
+    {
+      "name": "is_aircraft_change_ssim_indicator",
+      "type": "STRING",
+      "mode": "NULLABLE"
+    },
+    {
+      "name": "fleet_change_indicator",
+      "type": "STRING",
+      "mode": "NULLABLE"
+    },
+    {
+      "name": "max_ground_time",
+      "type": "TIME",
+      "mode": "NULLABLE"
+    },
+    {
+      "name": "duty_day_number",
+      "type": "INTEGER",
+      "mode": "NULLABLE"
+    },
+    {
+      "name": "duty_calendar_day_number",
+      "type": "INTEGER",
+      "mode": "NULLABLE"
+    },
+    {
+      "name": "first_flight_duty_indicator",
+      "type": "INTEGER",
+      "mode": "NULLABLE"
+    },
+    {
+      "name": "aircraft_registration_change_indicator",
+      "type": "INTEGER",
+      "mode": "NULLABLE"
+    },
+    {
+      "name": "is_overnight_operation",
+      "type": "INTEGER",
+      "mode": "NULLABLE"
+    },
+    {
+      "name": "duty_reporting_time_hour_block_time",
+      "type": "TIME",
+      "mode": "NULLABLE"
+    },
+    {
+      "name": "duty_presentation_local_time",
+      "type": "TIME",
+      "mode": "NULLABLE"
+    },
+    {
+      "name": "duty_presentation_time_at",
+      "type": "TIME",
+      "mode": "NULLABLE"
+    },
+    {
+      "name": "duty_presentation_date_at",
+      "type": "DATE",
+      "mode": "NULLABLE"
+    },
+    {
+      "name": "duty_end_time_lt",
+      "type": "TIME",
+      "mode": "NULLABLE"
+    },
+    {
+      "name": "duty_end_date_lt",
+      "type": "DATE",
+      "mode": "NULLABLE"
+    },
+    {
+      "name": "duty_end_time_at",
+      "type": "TIME",
+      "mode": "NULLABLE"
+    },
+    {
+      "name": "duty_end_date_at",
+      "type": "DATE",
+      "mode": "NULLABLE"
+    },
+    {
+      "name": "duty_end_time_hb",
+      "type": "TIME",
+      "mode": "NULLABLE"
+    },
+    {
+      "name": "duty_end_date_home_base_timezone",
+      "type": "DATE",
+      "mode": "NULLABLE"
+    },
+    {
+      "name": "duty_duration_time",
+      "type": "STRING",
+      "mode": "NULLABLE"
+    },
+    {
+      "name": "max_duty_duration_time",
+      "type": "TIME",
+      "mode": "NULLABLE"
+    },
+    {
+      "name": "rest_period_time",
+      "type": "STRING",
+      "mode": "NULLABLE"
+    },
+    {
+      "name": "alertness_index_number",
+      "type": "INTEGER",
+      "mode": "NULLABLE"
+    },
+    {
+      "name": "captains_quantity",
+      "type": "INTEGER",
+      "mode": "NULLABLE"
+    },
+    {
+      "name": "first_officer_quantity",
+      "type": "INTEGER",
+      "mode": "NULLABLE"
+    },
+    {
+      "name": "customer_service_manager_crew_quantity",
+      "type": "INTEGER",
+      "mode": "NULLABLE"
+    },
+    {
+      "name": "block_control_crew_quantity",
+      "type": "INTEGER",
+      "mode": "NULLABLE"
+    },
+    {
+      "name": "cabin_crew_quantity",
+      "type": "INTEGER",
+      "mode": "NULLABLE"
+    },
+    {
+      "name": "departure_airport_longitude",
+      "type": "FLOAT",
+      "mode": "NULLABLE"
+    },
+    {
+      "name": "arrival_airport_longitude",
+      "type": "FLOAT",
+      "mode": "NULLABLE"
+    },
+    {
+      "name": "flight_direction_description",
+      "type": "STRING",
+      "mode": "NULLABLE"
+    },
+    {
+      "name": "crew_composition_type_code",
+      "type": "STRING",
+      "mode": "NULLABLE"
+    },
+    {
+      "name": "daytime_flight_kilometers_quantity",
+      "type": "INTEGER",
+      "mode": "NULLABLE"
+    },
+    {
+      "name": "total_flight_km_quantity",
+      "type": "STRING",
+      "mode": "NULLABLE"
+    },
+    {
+      "name": "daily_block_time_kilometers_quantity",
+      "type": "STRING",
+      "mode": "NULLABLE"
+    },
+    {
+      "name": "duty_block_time",
+      "type": "TIME",
+      "mode": "NULLABLE"
+    },
+    {
+      "name": "flight_operation_type_code",
+      "type": "STRING",
+      "mode": "NULLABLE"
+    },
+    {
+      "name": "pairing_productivity_per_day_quantity",
+      "type": "FLOAT",
+      "mode": "NULLABLE"
+    },
+    {
+      "name": "projected_delay_quantity",
+      "type": "STRING",
+      "mode": "NULLABLE"
+    },
+    {
+      "name": "accumulated_delay_quantity",
+      "type": "STRING",
+      "mode": "NULLABLE"
+    },
+    {
+      "name": "load_key_id",
+      "type": "STRING",
+      "mode": "NULLABLE"
+    },
+    {
+      "name": "load_type_code",
+      "type": "STRING",
+      "mode": "NULLABLE"
+    },
+    {
+      "name": "subsidiary_code",
+      "type": "STRING",
+      "mode": "NULLABLE"
+    },
+    {
+      "name": "fleet_type_code",
+      "type": "STRING",
+      "mode": "NULLABLE"
+    },
+    {
+      "name": "crew_range_type_code",
+      "type": "STRING",
+      "mode": "NULLABLE"
+    },
+    {
+      "name": "reference_month_number",
+      "type": "INTEGER",
+      "mode": "NULLABLE"
+    },
+    {
+      "name": "reference_year",
+      "type": "INTEGER",
+      "mode": "NULLABLE"
+    },
+    {
+      "name": "ingestion_datetime",
+      "type": "DATETIME",
+      "mode": "NULLABLE"
+    },
+    {
+      "name": "pairing_record_quantity",
+      "type": "INTEGER",
+      "mode": "NULLABLE"
+    },
+    {
+      "name": "comment_description",
+      "type": "STRING",
+      "mode": "NULLABLE"
+    },
+    {
+      "name": "load_version_id",
+      "type": "STRING",
+      "mode": "NULLABLE"
+    },
+    {
+      "name": "flight_departure_date_utc",
+      "type": "DATE",
+      "mode": "NULLABLE"
+    },
+    {
+      "name": "service_type_code",
+      "type": "STRING",
+      "mode": "NULLABLE"
+    },
+    {
+      "name": "flight_type_code",
+      "type": "STRING",
+      "mode": "NULLABLE"
+    }
+  ]
+}

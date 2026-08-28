@@ -1,0 +1,68 @@
+{
+  "mission": "Automatizacion productiva Pairings WB (Apps Script + BigQuery Carmen Gold + Sheets + clasp)",
+  "generated_at": "2026-08-28",
+  "environment": {
+    "clasp_version": "3.3.0",
+    "clasp_binary": "clasp.cmd",
+    "node_version": "v24.19.0",
+    "git_branch": "Pairings_WB",
+    "script_id": "1IFvtE2-2IP0mJkB-Jqm6IDdv586d5T_qrkmfx7_3I9L72fCZRolCTFrw",
+    "spreadsheet_id": "13gUbtsbVT1HpXemyJl510EZLi-xemMJYSwBCH2q9K0c",
+    "sheet_folder_id": "1T6KLxeLkII8WSUmFrxK3RUCsI6w9i1iZ",
+    "history_folder_id": "11Aqpqiw7JKhTzJkdM19wKIlHV8MhOZxv",
+    "authenticated_identity": "erick.obradovich@latam.com"
+  },
+  "gates": {
+    "BOUND_SCRIPT_GATE": {
+      "status": "FAIL",
+      "evidence": "script.googleapis.com/v1/projects/{scriptId} -> parentId vacio, title=Pairings_WB, HTTP 200",
+      "mitigation": "Trigger instalable ScriptApp.newTrigger('onOpenInstalable_').forSpreadsheet(SPREADSHEET_ID).onOpen().create() + funcion configurarMenuPairingsWB() de arranque unico (requiere 1 autorizacion manual humana en el editor de Apps Script, imposible de ejecutar sin interaccion OAuth de navegador)."
+    },
+    "DRIVE_METADATA_GATE": {
+      "status": "PASS",
+      "evidence": "Drive files.get sobre spreadsheet_id/sheet_folder_id/history_folder_id via token OAuth de clasp (scope drive.metadata.readonly): nombre 'Pairings WB', parents correctos, carpeta 'Histórico' hija de carpeta 'WB'."
+    },
+    "SHEETS_LIVE_READ_GATE": {
+      "status": "BLOCKED",
+      "evidence": "sheets.googleapis.com HTTP 403 SERVICE_DISABLED en proyecto GCP por defecto de clasp (1072944905499) + token sin scope spreadsheets.",
+      "impact": "No se puede leer el contenido LIVE (pestanas, _CONFIG, RESUMEN) desde Claude Code. El codigo entregado usa SpreadsheetApp.openById() para ser correcto quando se ejecute autorizado por el usuario real en el navegador; la verificacion de esa lectura queda pendiente de ejecucion humana (Diagnostico del sistema)."
+    },
+    "BIGQUERY_JOBS_CREATE_GATE": {
+      "status": "IAM_BLOCKED",
+      "evidence": "bigquery.googleapis.com/v2/projects/operations-data-prod/queries -> 403 'User does not have bigquery.jobs.create permission in project operations-data-prod'. Mismo resultado probando so-cm-opanalytics-dev unicamente como projecto de billing (la tabla origen consultada seguia siendo carmen_gold, no se cambio de fuente).",
+      "read_metadata_status": "PASS (bigquery.tables.get 200 OK: 38,729,643 filas, particionado MONTH sobre pairing_start_date, clustered por crew_base_code, 84 columnas confirmadas)",
+      "impact": "No pude ejecutar consultas reales de descubrimiento de snapshot desde Claude Code. El BigQueryGateway se implemento y se dejo listo; la ejecucion real requiere que a la identidad que autorice el script (probablemente la misma cuenta) se le otorgue BigQuery Job User en algun proyecto."
+    }
+  },
+  "source_of_truth": {
+    "project": "operations-data-prod",
+    "dataset": "carmen_gold",
+    "table": "crew_pairing_carmen_system",
+    "confirmed_schema_fields": 84,
+    "partitioning": "MONTH on pairing_start_date",
+    "clustering": ["crew_base_code"],
+    "note_fleet_type_code": "Valores distintos observados: NB, WB, B787, B767, E02, B777, A350. FLEET_SCOPE=B767 en config coincide con un valor real de columna. No se pudo confirmar en vivo (bloqueo IAM) si para subsidiary_code=LP + subfleet_code=763 el valor de fleet_type_code es 'B767' o 'WB'; el filtro SQL productivo NO fija fleet_type_code de forma ciega: filtra por subsidiary_code+crew_base_code+crew_range_type_code+subfleet_code+reference_year+reference_month_number (todos confirmados) y reporta fleet_type_code observado para que el usuario certifique.",
+    "note_crew_range_type_code": "Valores reales distintos: SAB, TM (no TC). TM confirmado presente."
+  },
+  "features": [
+    {"id": "F01", "name": "ConfigService + config_hash", "status": "GREEN", "verified_by": "node:test"},
+    {"id": "F02", "name": "DateTimeUtil sin drift UTC", "status": "GREEN", "verified_by": "node:test"},
+    {"id": "F03", "name": "Hash canonicalizacion + SHA-256 puro", "status": "GREEN", "verified_by": "node:test"},
+    {"id": "F04", "name": "snapshot_key / pairing_instance_key deterministas", "status": "GREEN", "verified_by": "node:test"},
+    {"id": "F05", "name": "PairingAssembler (orden legs, occupied_*, pairing_content_hash)", "status": "GREEN", "verified_by": "node:test"},
+    {"id": "F06", "name": "WBRulesEngine (rutas MIA/SCL/ATL, MAX_OCCUPIED_DAYS, ALLOWED_OCCUPIED_DOW, REVIEW)", "status": "GREEN", "verified_by": "node:test"},
+    {"id": "F07", "name": "AssignmentReconciler (ACTIVE/RELINKED_IDENTICAL/REVIEW_SOURCE_CHANGED/ORPHANED/NEW)", "status": "GREEN", "verified_by": "node:test"},
+    {"id": "F08", "name": "BigQuery SQL builder (proyeccion, partition pruning, sin SELECT *)", "status": "GREEN", "verified_by": "node:test (SQL string) + inspeccion manual"},
+    {"id": "F09", "name": "BigQuery row parsing schema-based (no indices magicos)", "status": "GREEN", "verified_by": "node:test"},
+    {"id": "F10", "name": "History key + naming + idempotencia (logica pura)", "status": "GREEN", "verified_by": "node:test"},
+    {"id": "F11", "name": "Lane assignment Cronograma (interval partitioning)", "status": "GREEN", "verified_by": "node:test"},
+    {"id": "F12", "name": "QA pre/post-write (Q1-Q20), Q14/Q17 corridos en runtime, Q16 gate de deploy-time", "status": "GREEN", "verified_by": "node:test (133 tests) + wired en 80_Orchestrator.js"},
+    {"id": "F13", "name": "Menu Apps Script + onOpen + trigger instalable standalone", "status": "YELLOW", "verified_by": "codigo escrito; requiere ejecucion humana autorizada en el Sheet real (BOUND_SCRIPT_GATE)"},
+    {"id": "F14", "name": "BigQueryGateway ejecucion real contra Carmen Gold", "status": "RED", "verified_by": "IAM_BLOCKED, ver gates"},
+    {"id": "F15", "name": "Historico Google Sheet nativo idempotente", "status": "YELLOW", "verified_by": "codigo escrito; requiere ejecucion live (Drive+Sheets) no disponible desde CLI"},
+    {"id": "F16", "name": "clasp push + verificacion post-push", "status": "PENDING"},
+    {"id": "F17", "name": "clasp run diagnostico headless", "status": "PENDING"},
+    {"id": "F18", "name": "Git commits + push rama Pairings_WB", "status": "PENDING"},
+    {"id": "F19", "name": "Revision adversarial independiente (Seccion 44)", "status": "GREEN", "verified_by": "/code-review high (7 sub-agentes); 9 bugs reales corregidos, 1 hallazgo confirmado como diseno intencional (Seccion 7), ver D17"}
+  ]
+}
