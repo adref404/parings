@@ -65,6 +65,15 @@ Técnicas (ocultas): `_PAIRINGS_DATA`, `_CONFIG`, `_RUNS`.
 sobrescriben en un refresh — ver `AssignmentReconciler` (`40_Reconciliation.js`) y
 `docs/DECISIONS.md` (D12/D13).
 
+## Modelo: 1 Apps Script central + N Spreadsheets mensuales (D23)
+
+Un único Apps Script controla **múltiples archivos**, uno por mes ("Pairings WB - SEPTIEMBRE 2026",
+"Pairings WB - OCTUBRE 2026", ...), todos en la carpeta operativa WB. Cada archivo conserva
+permanentemente su propio periodo, `assignment_id`/INS/ACT, outputs y auditoría — nunca se
+reutiliza el archivo de un mes para el siguiente, y nunca se reconcilian asignaciones humanas entre
+archivos de meses distintos. `Diccionario` sí se copia como maestro a cada mes nuevo. Ver
+`docs/DECISIONS.md` D23 y `77_WorkbookIdentity.js`/`85_MonthlyWorkbook.js`.
+
 ## Menú "Pairings WB" (único menú de nivel superior)
 
 Cuatro acciones de usuario final, en lenguaje operacional (sin BigQuery/snapshot/hash/`_CONFIG`):
@@ -74,11 +83,19 @@ Cuatro acciones de usuario final, en lenguaje operacional (sin BigQuery/snapshot
    publica SOLO si usted confirma y todos los controles pasan.
 2. **Previsualizar cambios** → el mismo cálculo, con resumen humano, en modo de solo lectura.
 3. **Ver estado del mes** → vistazo rápido y barato (sin BigQuery) al periodo configurado.
-4. **Ir a RESUMEN** → activa la hoja RESUMEN (valida `EXPECTED_SPREADSHEET_ID` antes de actuar).
+4. **Ir a RESUMEN** → activa la hoja RESUMEN del archivo mensual activo.
+
+**Meses** (creación/apertura de archivos mensuales, D23):
+
+5. **Crear próximo mes** → crea (o reutiliza, idempotente) el archivo del mes calendario siguiente
+   al de este archivo, sin afectar al actual. Intenta descubrir/certificar su snapshot solo; si es
+   ambiguo o falla, queda `PENDING` para administración.
+6. **Crear mes manualmente** → igual, para el año/mes que se indique.
+7. **Abrir mes actual** / **Abrir carpeta de Pairings WB** → enlaces directos.
 
 Toda herramienta técnica/administrativa vive bajo **Administración** (Configuración / Fuente de
 datos / Proceso y reconciliación / Históricos / Auditoría y QA), que termina en **Guía de uso y
-administración** (sidebar con el manual completo). Ver `docs/DECISIONS.md` D21.
+administración** (sidebar con el manual completo). Ver `docs/DECISIONS.md` D21/D23.
 
 ### Flujo mensual técnico (para administración)
 
@@ -97,12 +114,19 @@ administración** (sidebar con el manual completo). Ver `docs/DECISIONS.md` D21.
 
 ## Gate crítico: script standalone
 
-El Apps Script (`1IFvtE2...`) **no está container-bound** al Spreadsheet (confirmado vía
-`script.googleapis.com` — `parentId` vacío). Por eso `onOpen()` simple trigger nunca se dispara
-para el Spreadsheet productivo. La mitigación es un **trigger instalable**: ejecutar **una sola
-vez**, manualmente, desde el editor de Apps Script (Extensiones → Apps Script → seleccionar
-`configurarMenuPairingsWB` → Ejecutar), lo cual pedirá autorización OAuth interactiva. Después de
-eso, el menú aparece solo cada vez que se abre el Spreadsheet. Ver `docs/DECISIONS.md` (D2).
+El Apps Script (`1IFvtE2...`) **no está container-bound** a ningún Spreadsheet (confirmado vía
+`script.googleapis.com` — `parentId` vacío). Por eso `onOpen()` simple trigger nunca se dispara. La
+mitigación es un **trigger instalable por archivo**: para Septiembre (el único que existía antes de
+D23), ejecutar **una sola vez**, manualmente, desde el editor de Apps Script (Extensiones → Apps
+Script → seleccionar `configurarMenuPairingsWB` → Ejecutar), lo cual pedirá autorización OAuth
+interactiva. Cualquier mes creado después vía **Meses > Crear próximo mes/Crear mes manualmente**
+ya recibe su propio trigger automáticamente (`ensureOpenTriggerForSpreadsheet`, sin este paso
+manual). Ver `docs/DECISIONS.md` (D2, D23).
+
+Además, `ensureDailyAutoCreateTrigger` (ejecutar una sola vez, misma exigencia de autorización)
+registra el único trigger diario global que, a partir de `AUTO_CREATE_DAY` (Script Properties,
+default día 20), crea automáticamente (si falta) el mes calendario siguiente — nunca modifica el
+mes anterior. Ver `docs/DECISIONS.md` D23.
 
 ## Troubleshooting / IAM necesario
 

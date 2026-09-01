@@ -6,11 +6,15 @@
  */
 
 var SheetStructure = {
-  /** Abre el Spreadsheet productivo por ID fijo. NUNCA usa getActiveSpreadsheet() (Seccion 26/D4):
-   * el script es standalone, por lo que "activo" no esta garantizado fuera de un trigger instalable. */
-  openProductionSpreadsheet: function () {
-    var id = WB_KNOWN.EXPECTED_SPREADSHEET_ID;
-    return SpreadsheetApp.openById(id);
+  /**
+   * Abre CUALQUIER Spreadsheet del ecosistema WB por su ID explicito (D23: modelo 1 archivo = 1
+   * mes). Reemplaza al antiguo openProductionSpreadsheet(), que abria SIEMPRE el mismo ID fijo
+   * (Septiembre) y por eso era incompatible con multiples archivos mensuales independientes. Quien
+   * decide QUE fileId corresponde es resolveWorkbookContext_() (85_MonthlyWorkbook.js), nunca este
+   * metodo: aqui solo se abre, sin resolver identidad.
+   */
+  openWorkbookById: function (fileId) {
+    return SpreadsheetApp.openById(fileId);
   },
 
   getOrCreateSheet: function (ss, name) {

@@ -31,21 +31,17 @@ function onOpenInstalable_(e) {
 }
 
 /**
- * Registra (idempotente) el trigger instalable "On open" apuntando al Spreadsheet productivo.
- * Ejecutar UNA SOLA VEZ, manualmente, desde el editor de Apps Script.
+ * Registra (idempotente) el trigger instalable "On open" para el archivo de SEPTIEMBRE 2026 (el
+ * mes original, unico que puede necesitar este arranque manual desde antes del modelo multi-mes).
+ * Ejecutar UNA SOLA VEZ, manualmente, desde el editor de Apps Script. Cualquier mes creado despues
+ * via "Meses > Crear mes" ya recibe su propio trigger automaticamente
+ * (ensureOpenTriggerForSpreadsheet, 85_MonthlyWorkbook.js), sin este paso manual.
  */
 function configurarMenuPairingsWB() {
-  var existing = ScriptApp.getProjectTriggers().filter(function (t) {
-    return t.getHandlerFunction() === 'onOpenInstalable_' && t.getEventType() === ScriptApp.EventType.ON_OPEN;
-  });
-  if (existing.length > 0) {
-    return 'El trigger instalable ya existia (' + existing.length + '). No se creo uno nuevo.';
-  }
-  ScriptApp.newTrigger('onOpenInstalable_')
-    .forSpreadsheet(WB_KNOWN.EXPECTED_SPREADSHEET_ID)
-    .onOpen()
-    .create();
-  return 'Trigger instalable creado. La proxima vez que se abra el Spreadsheet "Pairings WB", el menu aparecera automaticamente.';
+  var result = ensureOpenTriggerForSpreadsheet(WB_KNOWN.EXPECTED_SPREADSHEET_ID);
+  return result.created
+    ? 'Trigger instalable creado. La proxima vez que se abra el Spreadsheet de Septiembre 2026, el menu aparecera automaticamente.'
+    : 'El trigger instalable ya existia. No se creo uno nuevo.';
 }
 
 /**
@@ -63,6 +59,19 @@ function buildPairingsWbMenuSpec_() {
       { type: 'item', label: 'Ver estado del mes', fn: 'wbMenuVerEstadoDelMes' },
       { type: 'item', label: 'Ir a RESUMEN', fn: 'wbMenuIrAResumen' },
       { type: 'separator' },
+      {
+        // D23: 1 Apps Script central + N Spreadsheets mensuales independientes. Cada mes vive en su
+        // propio archivo (nunca se reutiliza uno para el mes siguiente); este submenu es la unica
+        // via de usuario final para crear/abrir esos archivos.
+        type: 'submenu',
+        label: 'Meses',
+        items: [
+          { type: 'item', label: 'Crear próximo mes', fn: 'wbMenuCrearProximoMes' },
+          { type: 'item', label: 'Crear mes manualmente', fn: 'wbMenuCrearMesManualmente' },
+          { type: 'item', label: 'Abrir mes actual', fn: 'wbMenuAbrirMesActual' },
+          { type: 'item', label: 'Abrir carpeta de Pairings WB', fn: 'wbMenuAbrirCarpetaPairingsWB' },
+        ],
+      },
       {
         type: 'submenu',
         label: 'Administración',
@@ -153,7 +162,26 @@ function buildGuiaHtmlContent_() {
     '  .estado { font-weight: bold; }',
     '</style>',
 
-    '<h2>A. Opciones del usuario final</h2>',
+    '<h2>A. Modelo: 1 archivo = 1 mes</h2>',
+    '<p>Cada mes de Pairings WB vive en su PROPIO archivo de Google Sheets (ej: ',
+    '"Pairings WB - OCTUBRE 2026"), nunca se reutiliza el archivo de un mes para el mes siguiente. ',
+    'Un Apps Script central controla todos los archivos. Cada archivo conserva permanentemente su ',
+    'propio periodo, sus asignaciones (INS/ACT/assignment_id), sus outputs y su auditoría — nunca se ',
+    'reconcilian asignaciones humanas entre archivos de meses distintos. El <code>Diccionario</code> ',
+    'de instructores sí se copia al crear cada mes nuevo. Use <b>Meses</b> para crear/abrir archivos.</p>',
+
+    '<h2>B. Meses</h2>',
+    '<ul>',
+    '  <li><b>Crear próximo mes</b>: crea (o reutiliza si ya existe) el archivo del mes calendario ',
+    '      siguiente al de este archivo. El nuevo archivo empieza sin asignaciones, sin ',
+    '      <code>INS</code>/<code>ACT</code> heredados y con su snapshot pendiente de certificar ',
+    '      (o certificado automáticamente si Carmen Gold solo ofrece un candidato).</li>',
+    '  <li><b>Crear mes manualmente</b>: igual que arriba, pero para el año y mes que usted indique.</li>',
+    '  <li><b>Abrir mes actual</b>: muestra el periodo y el enlace de este archivo.</li>',
+    '  <li><b>Abrir carpeta de Pairings WB</b>: enlace a la carpeta de Drive con todos los meses.</li>',
+    '</ul>',
+
+    '<h2>C. Opciones del usuario final</h2>',
     '<ul>',
     '  <li><b>Actualizar Pairings WB</b>: el flujo normal de cada mes. Revisa todo silenciosamente ',
     '      (configuración, snapshot, seguridad del baseline), calcula una previsualización, muestra ',
@@ -165,7 +193,7 @@ function buildGuiaHtmlContent_() {
     '  <li><b>Ir a RESUMEN</b>: lo lleva directo a la hoja RESUMEN.</li>',
     '</ul>',
 
-    '<h2>B. Administración</h2>',
+    '<h2>D. Administración</h2>',
     '<h3>Configuración</h3>',
     '<ul>',
     '  <li><b>Diagnóstico del sistema</b>: revisa Spreadsheet, hojas, BigQuery y el último run.</li>',
@@ -201,7 +229,7 @@ function buildGuiaHtmlContent_() {
     '  <li><b>Ejecutar QA</b>: corre los controles de calidad que no requieren BigQuery.</li>',
     '</ul>',
 
-    '<h2>C. Hojas visibles</h2>',
+    '<h2>E. Hojas visibles</h2>',
     '<ul>',
     '  <li><b>RESUMEN</b>: tabla operacional de asignaciones. <code>INS</code> y <code>ACT</code> son ',
     '      decisiones HUMANAS; nunca se sobrescriben por un refresh. El resto de columnas técnicas ',
@@ -212,7 +240,7 @@ function buildGuiaHtmlContent_() {
     '  <li><b>Diccionario</b>: maestro de <code>INS</code> / <code>BP</code> / <code>NOMBRE</code>.</li>',
     '</ul>',
 
-    '<h2>D. Hojas técnicas (ocultas por diseño)</h2>',
+    '<h2>F. Hojas técnicas (ocultas por diseño)</h2>',
     '<ul>',
     '  <li><b>_PAIRINGS_DATA</b>: backend leg-level de todo el snapshot publicado (incluye lo que no ',
     '      es elegible, con su motivo).</li>',
@@ -221,11 +249,11 @@ function buildGuiaHtmlContent_() {
     '  <li><b>_RUNS</b>: auditoría append-only de cada ejecución (preview y publicación).</li>',
     '</ul>',
 
-    '<h2>E. Flujo mensual</h2>',
+    '<h2>G. Flujo mensual</h2>',
     '<p>Preparar periodo &rarr; revisar/certificar fuente &rarr; previsualizar &rarr; revisar &rarr; ',
     'publicar &rarr; histórico.</p>',
 
-    '<h2>F. Estados de asignación</h2>',
+    '<h2>H. Estados de asignación</h2>',
     '<ul>',
     '  <li><b>ACTIVE</b>: se volvió a calcular el mismo snapshot; la asignación se conserva tal cual.</li>',
     '  <li><b>RELINKED_IDENTICAL</b>: cambió el snapshot pero el pairing es idéntico; se conserva la ',
@@ -238,7 +266,7 @@ function buildGuiaHtmlContent_() {
     '  <li><b>NEW</b>: pairing del snapshot actual sin ninguna asignación previa que lo reclame.</li>',
     '</ul>',
 
-    '<h2>G. Seguridad</h2>',
+    '<h2>I. Seguridad</h2>',
     '<ul>',
     '  <li><code>INS</code>/<code>ACT</code> son decisiones humanas: ningún cálculo las sobrescribe jamás.</li>',
     '  <li>Un baseline operacional sin vinculación técnica segura (migrado antes de tener snapshot ',

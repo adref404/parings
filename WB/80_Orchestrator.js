@@ -9,30 +9,52 @@
  */
 
 var Orchestrator = {
-  /** Carga config+rutas y valida estructura minima. No escribe nada salvo bootstrap de _CONFIG faltante. */
-  loadContext: function () {
-    var ss = SheetStructure.openProductionSpreadsheet();
+  /**
+   * Carga config+rutas y valida estructura minima sobre el Spreadsheet EXPLICITO recibido (D23:
+   * modelo 1 archivo = 1 mes). NUNCA abre un ID fijo por defecto -- quien decide que Spreadsheet es
+   * "el" target de esta operacion es resolveWorkbookContext_() (85_MonthlyWorkbook.js), en el menu
+   * o en un trigger/background. Escribe SOLO bootstrap de _CONFIG faltante (incluye auto-asignar
+   * MONTH_FILE_ID la primera vez que se ve este archivo, ver decideMonthFileIdSelfHeal) y, si hace
+   * falta, renombra el archivo a su titulo canonico (Seccion 6 de la mision: migracion segura de
+   * "Pairings WB" a "Pairings WB - SEPTIEMBRE 2026" -- nunca cambia ID ni contenido operacional,
+   * ver decideCanonicalTitle). Ambos son idempotentes: sobre un archivo ya correcto son no-ops.
+   */
+  loadContext: function (ss) {
+    if (!ss) {
+      throw new Error('Orchestrator.loadContext requiere un Spreadsheet explicito (ver resolveWorkbookContext_ en 85_MonthlyWorkbook.js); nunca se abre un ID fijo por defecto (D23).');
+    }
     var ensured = ConfigService.ensureDefaults(ss); // solo rellena claves ausentes, nunca sobrescribe
     var config = canonicalizeConfig(ensured.values);
+
+    var identity = decideMonthFileIdSelfHeal(config.MONTH_FILE_ID, ss.getId());
+    if (identity.action === 'MISMATCH') throw new Error(identity.error);
+    if (identity.action === 'SELF_ASSIGN') {
+      ConfigService.writeValues(ss, { MONTH_FILE_ID: identity.value });
+      config.MONTH_FILE_ID = identity.value;
+    }
+
+    var titleDecision = decideCanonicalTitle(ss.getName(), config.REFERENCE_YEAR, config.REFERENCE_MONTH);
+    if (titleDecision.action === 'RENAME') ss.rename(titleDecision.value);
+
     var routes = normalizeRoutes(ensured.routes);
     var allowedDow = parseAllowedDow(config.ALLOWED_OCCUPIED_DOW);
     var configHash = computeConfigHash(config, routes);
     return { ss: ss, config: config, routes: routes, allowedDow: allowedDow, configHash: configHash };
   },
 
-  /** Diagnostico completo de solo lectura (Seccion 25/26/39). Nunca escribe. */
-  runDiagnostics: function () {
+  /** Diagnostico completo de solo lectura (Seccion 25/26/39). Nunca escribe (salvo bootstrap, via loadContext). */
+  runDiagnostics: function (ss) {
     var report = { timestamp: new Date().toISOString() };
 
     var ctx;
     try {
-      ctx = Orchestrator.loadContext();
+      ctx = Orchestrator.loadContext(ss);
       report.spreadsheetOpened = true;
       report.spreadsheetId = ctx.ss.getId();
       report.spreadsheetName = ctx.ss.getName();
     } catch (e) {
       report.spreadsheetOpened = false;
-      report.error = 'No se pudo abrir el Spreadsheet productivo: ' + e.message;
+      report.error = 'No se pudo abrir/validar este archivo mensual: ' + e.message;
       return report;
     }
 
@@ -97,8 +119,8 @@ var Orchestrator = {
   },
 
   /** Flujo A (Seccion 12): descubre snapshots candidatos para el mes configurado. No certifica nada. */
-  discoverSnapshots: function () {
-    var ctx = Orchestrator.loadContext();
+  discoverSnapshots: function (ss) {
+    var ctx = Orchestrator.loadContext(ss);
     var validation = validateConfig(ctx.config, ctx.routes);
     if (!validation.valid) throw new Error('Configuracion invalida: ' + validation.errors.join(' | '));
 
@@ -114,8 +136,8 @@ var Orchestrator = {
   },
 
   /** Flujo B (Seccion 12): certifica una identidad de carga exacta, elegida explicitamente por el usuario. */
-  certifySnapshot: function (loadIdentity) {
-    var ctx = Orchestrator.loadContext();
+  certifySnapshot: function (ss, loadIdentity) {
+    var ctx = Orchestrator.loadContext(ss);
     ConfigService.writeSnapshotCertification(ctx.ss, loadIdentity);
     return { certified: true, loadIdentity: loadIdentity };
   },
@@ -129,8 +151,8 @@ var Orchestrator = {
    * Nunca escribe _CONFIG. Nunca toca PROJECT_ID/DATASET_ID/TABLE_ID (fqTable() los usa tal cual
    * estan en ctx.config, sin importar el candidato de job project).
    */
-  testJobProject: function (candidateJobProjectId) {
-    var ctx = Orchestrator.loadContext();
+  testJobProject: function (ss, candidateJobProjectId) {
+    var ctx = Orchestrator.loadContext(ss);
     var report = {
       dataProject: ctx.config.PROJECT_ID,
       currentJobProject: ctx.config.BIGQUERY_JOB_PROJECT_ID,
@@ -164,8 +186,8 @@ var Orchestrator = {
    * confirmacion explicita del usuario (Seccion 5.5-5.6 del prompt maestro). Nunca certifica
    * snapshot, nunca toca ninguna otra clave de _CONFIG.
    */
-  applyJobProject: function (candidateJobProjectId) {
-    var ctx = Orchestrator.loadContext();
+  applyJobProject: function (ss, candidateJobProjectId) {
+    var ctx = Orchestrator.loadContext(ss);
     var plan = buildJobProjectUpdatePlan(candidateJobProjectId);
     ConfigService.writeValues(ctx.ss, plan);
     return { applied: true, plan: plan };
@@ -178,8 +200,8 @@ var Orchestrator = {
    * Corre una consulta REAL de BigQuery (necesita filas, no solo un dry run de sintaxis) pero NUNCA
    * escribe ninguna hoja ni registra un run en _RUNS: es estrictamente de solo lectura.
    */
-  compareBaselineWithSnapshot: function () {
-    var ctx = Orchestrator.loadContext();
+  compareBaselineWithSnapshot: function (ss) {
+    var ctx = Orchestrator.loadContext(ss);
     var configValidation = validateConfig(ctx.config, ctx.routes);
     if (!configValidation.valid) throw new Error('Configuracion invalida: ' + configValidation.errors.join(' | '));
     if (!isSnapshotCertified(ctx.config, true)) {
@@ -212,8 +234,8 @@ var Orchestrator = {
     return report;
   },
 
-  /** Ejecuta el pipeline completo. dryRun=true nunca escribe hojas operacionales. */
-  runPipeline: function (dryRun) {
+  /** Ejecuta el pipeline completo sobre el Spreadsheet explicito `ss`. dryRun=true nunca escribe hojas operacionales. */
+  runPipeline: function (ss, dryRun) {
     var lock = LockService.getScriptLock();
     if (!lock.tryLock(30000)) {
       throw new Error('Ya hay un calculo de Pairings WB en curso. Intente nuevamente en unos minutos.');
@@ -223,7 +245,7 @@ var Orchestrator = {
     var runId = 'RUN-' + Utilities.getUuid();
 
     try {
-      var ctx = Orchestrator.loadContext();
+      var ctx = Orchestrator.loadContext(ss);
       var qa = [];
 
       var configValidation = validateConfig(ctx.config, ctx.routes);
@@ -374,7 +396,7 @@ var Orchestrator = {
       return result;
     } catch (err) {
       try {
-        var ctxForError = Orchestrator.loadContext();
+        var ctxForError = Orchestrator.loadContext(ss);
         recordRun(ctxForError.ss, runId, startedAt, new Date(), 'ERROR', ctxForError, null, null, null, {}, dryRun ? 'PREVIEW' : 'PUBLISH', null, err);
       } catch (e2) { /* si ni siquiera se pudo abrir el spreadsheet, no hay donde registrar el run */ }
       throw err;
@@ -383,8 +405,8 @@ var Orchestrator = {
     }
   },
 
-  runQaOnly: function () {
-    var ctx = Orchestrator.loadContext();
+  runQaOnly: function (ss) {
+    var ctx = Orchestrator.loadContext(ss);
     var baseline = SheetStructure.readResumenRows(ctx.ss).rows;
     return [
       QaService.q1ConfigValid(ctx.config, ctx.routes),

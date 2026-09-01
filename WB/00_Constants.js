@@ -5,7 +5,17 @@
  * no credenciales.
  */
 
-/** IDs de recursos productivos conocidos (Seccion 2 y 35 del prompt maestro). */
+/**
+ * IDs de recursos productivos conocidos (Seccion 2 y 35 del prompt maestro).
+ * D23 (docs/DECISIONS.md): EXPECTED_SPREADSHEET_ID ya NO es "el" Spreadsheet productivo unico --
+ * es el ID FIJO de SEPTIEMBRE 2026 (el mes original), que ahora cumple un doble rol: (1) sigue
+ * siendo el archivo operativo de Septiembre, con su propio MONTH_FILE_ID/REFERENCE_YEAR/MONTH en su
+ * propia `_CONFIG`; (2) es la plantilla visual/estructural que `MonthlyWorkbookService.createMonth`
+ * copia para crear cada mes nuevo (formato/Vuelos/Cronograma/RESUMEN/Diccionario/protecciones). El
+ * backend NUNCA abre este ID como fallback silencioso para operar sobre "el" mes actual -- eso
+ * requiere `resolveWorkbookContext_()` (85_MonthlyWorkbook.js), que resuelve el Spreadsheet activo
+ * (accion de menu) o uno explicito por fileId (trigger/background), nunca este.
+ */
 var WB_KNOWN = Object.freeze({
   EXPECTED_SPREADSHEET_ID: '13gUbtsbVT1HpXemyJl510EZLi-xemMJYSwBCH2q9K0c',
   SHEET_FOLDER_ID: '1T6KLxeLkII8WSUmFrxK3RUCsI6w9i1iZ',
@@ -131,7 +141,10 @@ var CONFIG_DEFAULTS = Object.freeze({
   MAX_OCCUPIED_DAYS: '3',
   ALLOWED_OCCUPIED_DOW: 'MON,TUE,WED,THU,FRI',
   HISTORY_FOLDER_ID: WB_KNOWN.HISTORY_FOLDER_ID,
-  EXPECTED_SPREADSHEET_ID: WB_KNOWN.EXPECTED_SPREADSHEET_ID,
+  // ID del ARCHIVO MENSUAL propio (D23): se auto-asigna la primera vez que se abre un archivo sin
+  // esta clave (ver decideMonthFileIdSelfHeal en 77_WorkbookIdentity.js), incluyendo Septiembre
+  // migrando. Default '' a proposito: nunca un ID fijo, cada archivo termina con el suyo.
+  MONTH_FILE_ID: '',
   AUTO_ARCHIVE_ON_SUCCESS: 'TRUE',
   LOAD_TYPE_CODE: 'PENDING_CERTIFICATION',
   LOAD_KEY_ID: 'PENDING_CERTIFICATION',

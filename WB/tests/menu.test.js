@@ -63,6 +63,34 @@ test('M3 - existe el submenu "Administración"', () => {
   assert.ok(Array.isArray(admin.items) && admin.items.length > 0);
 });
 
+// --- "Meses" (D23: 1 archivo = 1 mes) --------------------------------------------------------
+
+const MONTH_FNS = ['wbMenuCrearProximoMes', 'wbMenuCrearMesManualmente', 'wbMenuAbrirMesActual', 'wbMenuAbrirCarpetaPairingsWB'];
+
+test('existe el submenu "Meses" en el nivel superior, con exactamente las 4 acciones esperadas', () => {
+  const spec = buildPairingsWbMenuSpec_();
+  const meses = findSubmenu(spec.items, 'Meses');
+  assert.ok(meses, 'debe existir un submenu "Meses"');
+  const fns = collectFns(meses.items);
+  assert.deepEqual(fns, MONTH_FNS);
+});
+
+test('"Meses" aparece DESPUES de las 4 acciones de usuario final y ANTES de "Administración"', () => {
+  const spec = buildPairingsWbMenuSpec_();
+  const topLabelsAll = spec.items.map((e) => e.label || e.type);
+  const mesesIdx = topLabelsAll.indexOf('Meses');
+  const adminIdx = topLabelsAll.indexOf('Administración');
+  assert.notEqual(mesesIdx, -1);
+  assert.ok(mesesIdx > 3, '"Meses" debe ir despues de las 4 acciones de usuario final');
+  assert.ok(mesesIdx < adminIdx, '"Meses" debe ir antes de "Administración"');
+});
+
+test('"Meses" no es una herramienta tecnica escondida dentro de "Administración"', () => {
+  const spec = buildPairingsWbMenuSpec_();
+  const admin = findSubmenu(spec.items, 'Administración');
+  assert.equal(findSubmenu(admin.items, 'Meses'), undefined);
+});
+
 test('M4 - ninguna herramienta tecnica/administrativa esta en el nivel superior', () => {
   const spec = buildPairingsWbMenuSpec_();
   const topFns = collectFns(spec.items.filter((e) => e.type === 'item')); // solo items DIRECTOS del top-level, no recursivo dentro de submenus

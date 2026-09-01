@@ -9,10 +9,12 @@
 /**
  * Diagnostico headless (sin SpreadsheetApp.getUi()): pensado para invocarse via `clasp run` o la
  * API de ejecucion de Apps Script (Seccion 47), donde no existe contexto de UI. Devuelve un objeto
- * JSON-serializable identico al que consume wbMenuDiagnostico.
+ * JSON-serializable identico al que consume wbMenuDiagnostico. `fileId` es OBLIGATORIO en la
+ * practica (D23: sin Spreadsheet activo en un contexto headless, resolveWorkbookContext_ lanza en
+ * vez de adivinar Septiembre como fallback silencioso).
  */
-function wbDiagnosticoHeadless() {
-  return Orchestrator.runDiagnostics();
+function wbDiagnosticoHeadless(fileId) {
+  return Orchestrator.runDiagnostics(resolveWorkbookContext_(fileId));
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -82,9 +84,10 @@ function isCleanForPublish_(r) {
 function wbMenuActualizarPairingsWB() {
   var ui = SpreadsheetApp.getUi();
 
-  var ctx;
+  var ss, ctx;
   try {
-    ctx = Orchestrator.loadContext();
+    ss = resolveWorkbookContext_();
+    ctx = Orchestrator.loadContext(ss);
   } catch (e) {
     ui.alert('Pairings WB', humanFriendlyBlockedMessage_(), ui.ButtonSet.OK);
     return;
@@ -93,7 +96,7 @@ function wbMenuActualizarPairingsWB() {
 
   var preview;
   try {
-    preview = Orchestrator.runPipeline(true);
+    preview = Orchestrator.runPipeline(ss, true);
   } catch (e) {
     ui.alert('Pairings WB', humanFriendlyBlockedMessage_(periodLabel), ui.ButtonSet.OK);
     return;
@@ -109,7 +112,7 @@ function wbMenuActualizarPairingsWB() {
 
   var result;
   try {
-    result = Orchestrator.runPipeline(false);
+    result = Orchestrator.runPipeline(ss, false);
   } catch (e) {
     ui.alert('Pairings WB', humanFriendlyBlockedMessage_(periodLabel), ui.ButtonSet.OK);
     return;
@@ -128,9 +131,10 @@ function wbMenuActualizarPairingsWB() {
 function wbMenuPrevisualizarCambios() {
   var ui = SpreadsheetApp.getUi();
 
-  var ctx;
+  var ss, ctx;
   try {
-    ctx = Orchestrator.loadContext();
+    ss = resolveWorkbookContext_();
+    ctx = Orchestrator.loadContext(ss);
   } catch (e) {
     ui.alert('Pairings WB', humanFriendlyBlockedMessage_(), ui.ButtonSet.OK);
     return;
@@ -139,7 +143,7 @@ function wbMenuPrevisualizarCambios() {
 
   var preview;
   try {
-    preview = Orchestrator.runPipeline(true);
+    preview = Orchestrator.runPipeline(ss, true);
   } catch (e) {
     ui.alert('Pairings WB', humanFriendlyBlockedMessage_(periodLabel), ui.ButtonSet.OK);
     return;
@@ -160,7 +164,8 @@ function wbMenuPrevisualizarCambios() {
 function wbMenuVerEstadoDelMes() {
   var ui = SpreadsheetApp.getUi();
   try {
-    var ctx = Orchestrator.loadContext();
+    var ss = resolveWorkbookContext_();
+    var ctx = Orchestrator.loadContext(ss);
     var periodLabel = humanPeriodLabel_(ctx.config.REFERENCE_YEAR, ctx.config.REFERENCE_MONTH);
     var baseline = SheetStructure.readResumenRows(ctx.ss).rows.filter(function (r) { return r.assignment_id; });
 
@@ -190,15 +195,16 @@ function wbMenuVerEstadoDelMes() {
 }
 
 /**
- * "Ir a RESUMEN" (mision <end_user_experience> #4): valida SIEMPRE EXPECTED_SPREADSHEET_ID antes
- * de actuar, para nunca activar una hoja en el Spreadsheet equivocado.
+ * "Ir a RESUMEN" (mision <end_user_experience> #4): actua sobre CUALQUIER archivo mensual del
+ * ecosistema WB (D23), nunca solo sobre Septiembre -- usa el Spreadsheet activo (el que disparo el
+ * click de menu), no un ID fijo.
  */
 function wbMenuIrAResumen() {
   var ui = SpreadsheetApp.getUi();
   try {
     var active = SpreadsheetApp.getActiveSpreadsheet();
-    if (!active || active.getId() !== WB_KNOWN.EXPECTED_SPREADSHEET_ID) {
-      ui.alert('Pairings WB', 'No se pudo ir a RESUMEN: este menú debe ejecutarse desde el Spreadsheet "Pairings WB" correcto.', ui.ButtonSet.OK);
+    if (!active) {
+      ui.alert('Pairings WB', 'No se pudo ir a RESUMEN: ejecute este menú desde dentro de un archivo mensual de Pairings WB.', ui.ButtonSet.OK);
       return;
     }
     var sheet = active.getSheetByName(SHEET_NAMES.RESUMEN);
@@ -210,6 +216,92 @@ function wbMenuIrAResumen() {
   } catch (e) {
     ui.alert('Ir a RESUMEN — Error', String(e.message || e), ui.ButtonSet.OK);
   }
+}
+
+// ---------------------------------------------------------------------------------------------
+// "Meses" (D23 en docs/DECISIONS.md): 1 Apps Script central + N archivos mensuales independientes.
+// Nunca se reutiliza el archivo de un mes para el siguiente; estas son las unicas vias de usuario
+// final para crear/abrir esos archivos. La logica real vive en MonthlyWorkbookService
+// (85_MonthlyWorkbook.js); aqui solo se formatea entrada/salida de UI, igual que el resto de este
+// archivo. No se muestran detalles de BigQuery al usuario final (Seccion 3 de la mision).
+// ---------------------------------------------------------------------------------------------
+
+/** Resumen humano del resultado de MonthlyWorkbookService.createMonth/createNextMonth. */
+function buildMonthCreationSummary_(result) {
+  var lines = [
+    result.created ? ('Archivo creado: ' + result.name) : ('El archivo ya existía: ' + result.name),
+    'Enlace: ' + result.url,
+  ];
+  if (result.created) {
+    lines.push('');
+    if (result.snapshotStatus === 'CERTIFIED') {
+      lines.push('Snapshot: se encontró una única carga compatible y quedó certificada automáticamente.');
+    } else if (result.snapshotStatus === 'PENDING_AMBIGUOUS') {
+      lines.push('Snapshot: hay ' + result.candidatesCount + ' cargas candidatas — requiere administración ("Fuente de datos > Certificar snapshot").');
+    } else if (result.snapshotStatus === 'PENDING_NONE') {
+      lines.push('Snapshot: todavía no hay ninguna carga disponible para este mes en la fuente — requiere administración.');
+    } else if (result.snapshotStatus === 'PENDING_DISCOVERY_FAILED') {
+      lines.push('Snapshot: no se pudo revisar la fuente en este momento — requiere administración.');
+    }
+    lines.push('El mes nuevo empieza sin asignaciones, sin INS/ACT heredados y sin afectar a ningún otro mes.');
+  }
+  return lines.join('\n');
+}
+
+/**
+ * "Meses > Crear próximo mes": crea (idempotente) el archivo del mes calendario siguiente AL DE
+ * ESTE ARCHIVO (no al de hoy) -- ej. abierto desde Septiembre 2026, crea Octubre 2026.
+ */
+function wbMenuCrearProximoMes() {
+  var ui = SpreadsheetApp.getUi();
+  try {
+    var ctx = Orchestrator.loadContext(resolveWorkbookContext_());
+    var periodLabel = humanPeriodLabel_(ctx.config.REFERENCE_YEAR, ctx.config.REFERENCE_MONTH);
+    var confirm = ui.alert('Crear próximo mes', 'Este archivo es ' + periodLabel + '. ¿Crear el mes siguiente?', ui.ButtonSet.YES_NO);
+    if (confirm !== ui.Button.YES) return;
+
+    var result = MonthlyWorkbookService.createNextMonth(ctx.config.REFERENCE_YEAR, ctx.config.REFERENCE_MONTH);
+    ui.alert('Crear próximo mes', buildMonthCreationSummary_(result), ui.ButtonSet.OK);
+  } catch (e) {
+    ui.alert('Crear próximo mes — Error', String(e.message || e), ui.ButtonSet.OK);
+  }
+}
+
+/** "Meses > Crear mes manualmente": pide año y mes explícitos; mismo motor idempotente que "Crear próximo mes". */
+function wbMenuCrearMesManualmente() {
+  var ui = SpreadsheetApp.getUi();
+  try {
+    var resp = ui.prompt('Crear mes manualmente', 'Ingrese el periodo en formato AAAA-MM (ej: 2026-11):', ui.ButtonSet.OK_CANCEL);
+    if (resp.getSelectedButton() !== ui.Button.OK) return;
+    var m = /^(\d{4})-(\d{1,2})$/.exec(resp.getResponseText().trim());
+    if (!m) { ui.alert('Formato inválido. Use AAAA-MM, por ejemplo 2026-11.'); return; }
+    var year = parseInt(m[1], 10), month = parseInt(m[2], 10);
+    if (month < 1 || month > 12) { ui.alert('Mes inválido: ' + month + '. Debe estar entre 1 y 12.'); return; }
+
+    var result = MonthlyWorkbookService.createMonth(year, month);
+    ui.alert('Crear mes manualmente', buildMonthCreationSummary_(result), ui.ButtonSet.OK);
+  } catch (e) {
+    ui.alert('Crear mes manualmente — Error', String(e.message || e), ui.ButtonSet.OK);
+  }
+}
+
+/** "Meses > Abrir mes actual": muestra el periodo y el enlace de ESTE archivo. */
+function wbMenuAbrirMesActual() {
+  var ui = SpreadsheetApp.getUi();
+  try {
+    var ss = resolveWorkbookContext_();
+    var ctx = Orchestrator.loadContext(ss);
+    var periodLabel = humanPeriodLabel_(ctx.config.REFERENCE_YEAR, ctx.config.REFERENCE_MONTH);
+    ui.alert('Abrir mes actual', periodLabel + '\nEnlace: ' + ss.getUrl(), ui.ButtonSet.OK);
+  } catch (e) {
+    ui.alert('Abrir mes actual — Error', String(e.message || e), ui.ButtonSet.OK);
+  }
+}
+
+/** "Meses > Abrir carpeta de Pairings WB": enlace a la carpeta operativa con todos los meses. */
+function wbMenuAbrirCarpetaPairingsWB() {
+  var ui = SpreadsheetApp.getUi();
+  ui.alert('Carpeta de Pairings WB', 'https://drive.google.com/drive/folders/' + WB_KNOWN.SHEET_FOLDER_ID, ui.ButtonSet.OK);
 }
 
 /**
@@ -238,7 +330,7 @@ function wbMenuGuiaDeUso() {
 function wbMenuCompararSnapshotConResumen() {
   var ui = SpreadsheetApp.getUi();
   try {
-    var report = Orchestrator.compareBaselineWithSnapshot();
+    var report = Orchestrator.compareBaselineWithSnapshot(resolveWorkbookContext_());
     var s = report.summary;
     var lines = [
       'Snapshot: ' + report.snapshotKey,
@@ -285,7 +377,7 @@ function wbMenuCompararSnapshotConResumen() {
 function wbMenuDiagnostico() {
   var ui = SpreadsheetApp.getUi();
   try {
-    var r = Orchestrator.runDiagnostics();
+    var r = Orchestrator.runDiagnostics(resolveWorkbookContext_());
     var lines = [];
     lines.push('Spreadsheet: ' + (r.spreadsheetOpened ? (r.spreadsheetName + ' (' + r.spreadsheetId + ')') : 'NO SE PUDO ABRIR'));
     if (!r.spreadsheetOpened) { ui.alert('Diagnóstico del sistema', 'Spreadsheet: ' + r.error, ui.ButtonSet.OK); return; }
@@ -310,7 +402,7 @@ function wbMenuDiagnostico() {
 function wbMenuVerConfiguracion() {
   var ui = SpreadsheetApp.getUi();
   try {
-    var ctx = Orchestrator.loadContext();
+    var ctx = Orchestrator.loadContext(resolveWorkbookContext_());
     var lines = Object.keys(ctx.config).sort().map(function (k) { return k + ' = ' + ctx.config[k]; });
     lines.push('');
     lines.push('Rutas:');
@@ -332,7 +424,7 @@ function wbMenuConfigurarAnioMes() {
     if (!m) { ui.alert('Formato inválido. Use AAAA-MM, por ejemplo 2026-09.'); return; }
     var year = m[1], month = String(parseInt(m[2], 10));
 
-    var ctx = Orchestrator.loadContext();
+    var ctx = Orchestrator.loadContext(resolveWorkbookContext_());
     // Cambiar de mes invalida cualquier certificacion previa (es especifica de un mes): se resetea
     // explicitamente a PENDING en vez de arrastrar una certificacion que ya no corresponde.
     ConfigService.writeValues(ctx.ss, {
@@ -350,7 +442,7 @@ function wbMenuConfigurarAnioMes() {
 function wbMenuDetectarSnapshots() {
   var ui = SpreadsheetApp.getUi();
   try {
-    var r = Orchestrator.discoverSnapshots();
+    var r = Orchestrator.discoverSnapshots(resolveWorkbookContext_());
     if (r.candidates.length === 0) {
       ui.alert('Detectar snapshots', 'No se encontraron cargas compatibles para el periodo/config actual en Carmen Gold.', ui.ButtonSet.OK);
       return;
@@ -373,7 +465,8 @@ function wbMenuDetectarSnapshots() {
 function wbMenuCertificarSnapshot() {
   var ui = SpreadsheetApp.getUi();
   try {
-    var r = Orchestrator.discoverSnapshots();
+    var ss = resolveWorkbookContext_();
+    var r = Orchestrator.discoverSnapshots(ss);
     if (r.candidates.length === 0) {
       ui.alert('No hay candidatos para certificar. Ejecute primero "Detectar snapshots del mes".');
       return;
@@ -391,7 +484,7 @@ function wbMenuCertificarSnapshot() {
       if (isNaN(idx) || idx < 0 || idx >= r.candidates.length) { ui.alert('Número inválido.'); return; }
       chosen = r.candidates[idx];
     }
-    Orchestrator.certifySnapshot({
+    Orchestrator.certifySnapshot(ss, {
       load_key_id: chosen.load_key_id, load_type_code: chosen.load_type_code,
       load_version_id: chosen.load_version_id, ingestion_datetime: chosen.ingestion_datetime,
     });
@@ -404,7 +497,7 @@ function wbMenuCertificarSnapshot() {
 function wbMenuProbarConsulta() {
   var ui = SpreadsheetApp.getUi();
   try {
-    var ctx = Orchestrator.loadContext();
+    var ctx = Orchestrator.loadContext(resolveWorkbookContext_());
     var sql = buildDiscoverySql(ctx.config);
     var dry = BigQueryGateway.dryRun(sql, ctx.config.BIGQUERY_JOB_PROJECT_ID);
     ui.alert('Probar consulta (dry run)', 'La consulta es válida.\nBytes estimados a procesar: ' + dry.totalBytesProcessed + '\n\nEsto NO ejecuta ni factura la consulta, solo la valida.', ui.ButtonSet.OK);
@@ -422,7 +515,8 @@ function wbMenuProbarConsulta() {
 function wbMenuProbarConfigurarProyectoEjecucion() {
   var ui = SpreadsheetApp.getUi();
   try {
-    var ctx = Orchestrator.loadContext();
+    var ss = resolveWorkbookContext_();
+    var ctx = Orchestrator.loadContext(ss);
     var resp = ui.prompt(
       'BigQuery — Probar/configurar proyecto de ejecución',
       'Data project (fuente, fijo, nunca cambia) = ' + ctx.config.PROJECT_ID +
@@ -433,7 +527,7 @@ function wbMenuProbarConfigurarProyectoEjecucion() {
     if (resp.getSelectedButton() !== ui.Button.OK) return;
     var candidate = resp.getResponseText().trim() || WB_KNOWN.CANDIDATE_BIGQUERY_JOB_PROJECT_ID;
 
-    var report = Orchestrator.testJobProject(candidate);
+    var report = Orchestrator.testJobProject(ss, candidate);
     var lines = [
       'Data project = ' + report.dataProject,
       'Job project actual = ' + report.currentJobProject,
@@ -466,7 +560,7 @@ function wbMenuProbarConfigurarProyectoEjecucion() {
       return;
     }
 
-    var applied = Orchestrator.applyJobProject(candidate);
+    var applied = Orchestrator.applyJobProject(ss, candidate);
     ui.alert('_CONFIG actualizado: BIGQUERY_JOB_PROJECT_ID = ' + applied.plan.BIGQUERY_JOB_PROJECT_ID);
   } catch (e) {
     ui.alert('Proyecto de ejecución — Error', String(e.message || e), ui.ButtonSet.OK);
@@ -476,7 +570,7 @@ function wbMenuProbarConfigurarProyectoEjecucion() {
 function wbMenuPrevisualizarCalculo() {
   var ui = SpreadsheetApp.getUi();
   try {
-    var r = Orchestrator.runPipeline(true);
+    var r = Orchestrator.runPipeline(resolveWorkbookContext_(), true);
     ui.alert('Previsualizar cálculo', formatRunSummary_(r) + '\n\nEsto fue un DRY RUN: no se escribió ninguna hoja operacional.', ui.ButtonSet.OK);
   } catch (e) {
     ui.alert('Previsualizar cálculo — Error', String(e.message || e), ui.ButtonSet.OK);
@@ -486,7 +580,7 @@ function wbMenuPrevisualizarCalculo() {
 function wbMenuReconciliarCambios() {
   var ui = SpreadsheetApp.getUi();
   try {
-    var r = Orchestrator.runPipeline(true);
+    var r = Orchestrator.runPipeline(resolveWorkbookContext_(), true);
     var lines = [
       'Asignaciones preservadas (ACTIVE): ' + r.assignmentsPreserved,
       'Relinkeadas a nuevo snapshot (RELINKED_IDENTICAL): ' + r.assignmentsRelinked,
@@ -505,7 +599,7 @@ function wbMenuReconciliarCambios() {
 function wbMenuCrearVerificarHistorico() {
   var ui = SpreadsheetApp.getUi();
   try {
-    var ctx = Orchestrator.loadContext();
+    var ctx = Orchestrator.loadContext(resolveWorkbookContext_());
     var lastRun = AuditService.readLastRun(ctx.ss);
     if (!lastRun || (lastRun.status !== 'PUBLISHED' && lastRun.status !== 'PUBLISHED_WITH_QA_WARNINGS')) {
       ui.alert('No hay un run PUBLISHED reciente. Ejecute "Actualizar Pairings WB" primero.');
@@ -531,7 +625,7 @@ function wbMenuAbrirCarpetaHistoricos() {
 function wbMenuVerUltimoRun() {
   var ui = SpreadsheetApp.getUi();
   try {
-    var ctx = Orchestrator.loadContext();
+    var ctx = Orchestrator.loadContext(resolveWorkbookContext_());
     var lastRun = AuditService.readLastRun(ctx.ss);
     if (!lastRun) { ui.alert('Todavía no hay ningún run registrado en _RUNS.'); return; }
     var lines = Object.keys(lastRun).map(function (k) { return k + ': ' + lastRun[k]; });
@@ -544,7 +638,7 @@ function wbMenuVerUltimoRun() {
 function wbMenuEjecutarQA() {
   var ui = SpreadsheetApp.getUi();
   try {
-    var results = Orchestrator.runQaOnly();
+    var results = Orchestrator.runQaOnly(resolveWorkbookContext_());
     ui.alert('Ejecutar QA', formatQaList_(results), ui.ButtonSet.OK);
   } catch (e) {
     ui.alert('Ejecutar QA — Error', String(e.message || e), ui.ButtonSet.OK);
