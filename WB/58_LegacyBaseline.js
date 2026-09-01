@@ -33,14 +33,27 @@
 if (typeof module !== 'undefined' && module.exports) {
   var __Render42 = require('./55_RenderSummary.js');
   var deriveVisiblePairingFacts42 = __Render42.deriveVisiblePairingFacts;
+  var duCanonicalDisplayDate58 = require('./05_DateUtil.js').duCanonicalDisplayDate;
+  var ELIGIBILITY_STATUS58 = require('./00_Constants.js').ELIGIBILITY_STATUS;
 } else {
   var deriveVisiblePairingFacts42 = deriveVisiblePairingFacts;
+  var duCanonicalDisplayDate58 = duCanonicalDisplayDate;
+  var ELIGIBILITY_STATUS58 = ELIGIBILITY_STATUS;
 }
 
 /** Campos visibles/operacionales usados para comparar SIN depender de pairing_content_hash. */
 var VISIBLE_FACT_FIELDS = ['Fecha', 'Vuelo', 'Ruta', 'Inicio', 'Fin'];
 
-function normalizeVisibleValue_(v) {
+/** Fecha/Inicio/Fin son fechas: el Spreadsheet LIVE las guarda como celda DATE real (Date nativo de
+ * Apps Script al leerse con getValues()), mientras que `deriveVisiblePairingFacts` siempre produce
+ * texto "DD/MM/YYYY" (D14). Sin canonicalizar, un Date real NUNCA calzaria con su propio texto
+ * equivalente (String(Date) incluye hora/timezone) y todo baseline con fechas reales se reportaria
+ * como DISTINCT por error. Vuelo/Ruta son texto libre, se comparan tal cual (trim). Ver D22.
+ */
+var VISIBLE_DATE_FIELDS_ = { Fecha: true, Inicio: true, Fin: true };
+
+function normalizeVisibleValue_(field, v) {
+  if (VISIBLE_DATE_FIELDS_[field]) return duCanonicalDisplayDate58(v);
   return String(v === null || v === undefined ? '' : v).trim();
 }
 
@@ -52,8 +65,8 @@ function normalizeVisibleValue_(v) {
 function compareVisibleFacts_(baselineFacts, currentFacts) {
   var matches = 0;
   VISIBLE_FACT_FIELDS.forEach(function (f) {
-    var a = normalizeVisibleValue_(baselineFacts[f]);
-    var b = normalizeVisibleValue_(currentFacts[f]);
+    var a = normalizeVisibleValue_(f, baselineFacts[f]);
+    var b = normalizeVisibleValue_(f, currentFacts[f]);
     if (a !== '' && a === b) matches++;
   });
   if (matches === VISIBLE_FACT_FIELDS.length) return 'EXACT';
@@ -131,10 +144,11 @@ function shouldBlockPublish(dryRun, previousAssignmentRows) {
  * distintos). NUNCA escribe, NUNCA modifica snapshot/RESUMEN/hash, NUNCA genera assignment_id.
  *
  * @param {Array} previousAssignmentRows filas de RESUMEN (SheetStructure.readResumenRows().rows).
- * @param {Array} currentPairings pairings ensamblados del snapshot certificado, SIN filtrar por
- *   elegibilidad WB (para no confundir "no elegible este mes" con "ya no existe en Carmen Gold").
- *   Cada uno con pairing_id/pairing_content_hash y los campos que alimenta
- *   deriveVisiblePairingFacts (legs, occupied_*, route_display).
+ * @param {Array} currentPairings pairings ensamblados+evaluados del snapshot certificado, SIN
+ *   filtrar por elegibilidad WB (para no confundir "no elegible este mes" con "ya no existe en
+ *   Carmen Gold"). Cada uno con pairing_id/pairing_content_hash/eligibility_status/
+ *   eligibility_reason y los campos que alimenta deriveVisiblePairingFacts (legs, occupied_*,
+ *   route_display).
  */
 function compareBaselineWithSnapshot(previousAssignmentRows, currentPairings) {
   var baselineRows = (previousAssignmentRows || []).filter(function (r) { return r.assignment_id; });
@@ -159,6 +173,10 @@ function compareBaselineWithSnapshot(previousAssignmentRows, currentPairings) {
     pairingIdsUniqueBaseline: uniquePairingIds.length,
     pairingIdsPresent: 0,
     pairingIdsAbsent: 0,
+    // Desglose de "presente" por elegibilidad (mision <diagnostic_reliability>, seccion 2): un
+    // pairing_id presente pero REVIEW NO es lo mismo que ausente -- ver D22 en docs/DECISIONS.md.
+    pairingIdsPresentEligible: 0,
+    pairingIdsPresentReview: 0,
     visibleExact: 0,
     visiblePartial: 0,
     visibleDistinct: 0,
@@ -168,8 +186,13 @@ function compareBaselineWithSnapshot(previousAssignmentRows, currentPairings) {
   };
 
   var absentIds = [];
+  var presentIds = [];
+  var presentEligibleIds = [];
+  var presentReviewIds = [];
   var visibleExactHashDifferentIds = [];
   var visibleDistinctIds = [];
+  var reviewReasonCounts = {};
+  var reviewPairingReasons = [];
 
   uniquePairingIds.forEach(function (id) {
     var baselineRow = baselineRows.filter(function (r) { return String(r.Pairing || '') === id; })[0];
@@ -181,11 +204,29 @@ function compareBaselineWithSnapshot(previousAssignmentRows, currentPairings) {
       return;
     }
     summary.pairingIdsPresent++;
+    presentIds.push(id);
 
     // Reporte AGREGADO por pairing_id (la mision pide un resumen, no un detalle por cada
     // ocurrencia fisica): si el pairing_id tiene multiplicidad en el snapshot actual, se usa el
     // primer candidato. La multiplicidad fisica de legs ya la cubre Q13/30_PairingAssembler.js.
     var current = candidates[0];
+
+    if (current.eligibility_status === ELIGIBILITY_STATUS58.ELIGIBLE) {
+      summary.pairingIdsPresentEligible++;
+      presentEligibleIds.push(id);
+    } else if (current.eligibility_status === ELIGIBILITY_STATUS58.REVIEW) {
+      summary.pairingIdsPresentReview++;
+      presentReviewIds.push(id);
+      var reasonStr = current.eligibility_reason || '';
+      reviewPairingReasons.push({ pairing_id: id, eligibility_reason: reasonStr });
+      reasonStr.split(';').map(function (s) { return s.trim(); }).filter(function (s) { return s; })
+        .forEach(function (reasonToken) { reviewReasonCounts[reasonToken] = (reviewReasonCounts[reasonToken] || 0) + 1; });
+    }
+    // else: ELIGIBILITY_STATUS.REJECTED existe en 00_Constants.js pero ningun codigo lo produce hoy
+    // (35_WBRules.js solo devuelve ELIGIBLE o REVIEW, nunca REJECTED automatico). Deliberadamente NO
+    // se cuenta como ELIGIBLE ni se etiqueta "en revision" -- mezclarlo con REVIEW confundiria un
+    // estado mas definitivo con uno que espera juicio humano. Sigue contando en pairingIdsPresent.
+
     var baselineFacts = {
       Fecha: baselineRow.Fecha, Vuelo: baselineRow.Vuelo, Ruta: baselineRow.Ruta,
       Inicio: baselineRow.Inicio, Fin: baselineRow.Fin,
@@ -209,6 +250,11 @@ function compareBaselineWithSnapshot(previousAssignmentRows, currentPairings) {
   return {
     summary: summary,
     absentPairingIds: absentIds,
+    presentPairingIds: presentIds,
+    presentEligiblePairingIds: presentEligibleIds,
+    presentReviewPairingIds: presentReviewIds,
+    reviewReasonCounts: reviewReasonCounts,
+    reviewPairingReasons: reviewPairingReasons,
     visibleExactHashDifferentPairingIds: visibleExactHashDifferentIds,
     visibleDistinctPairingIds: visibleDistinctIds,
   };

@@ -11,7 +11,7 @@ test('ACTIVE - mismo snapshot, mismo contenido: preserva assignment_id/INS/ACT (
   const prev = [{ assignment_id: 'A1', pairing_instance_key: 'PIK1', pairing_id: '226', pairing_content_hash: 'H1', INS: 'Juan Perez', ACT: 'Simulador', source_snapshot_key: 'SNAP1' }];
   const current = [{ pairing_instance_key: 'PIK1', pairing_id: '226', pairing_content_hash: 'H1', snapshot_key: 'SNAP1' }];
 
-  const { rows, counts } = reconcileAssignments(prev, current, idGen('NEW'));
+  const { rows, counts } = reconcileAssignments(prev, current, current, idGen('NEW'));
 
   assert.equal(rows.length, 1);
   assert.equal(rows[0].assignment_id, 'A1');
@@ -26,7 +26,7 @@ test('RELINKED_IDENTICAL - nuevo snapshot, contenido identico: preserva assignme
   const prev = [{ assignment_id: 'A1', pairing_instance_key: 'PIK_OLD', pairing_id: '226', pairing_content_hash: 'H1', INS: 'Juan Perez', ACT: '', source_snapshot_key: 'SNAP_OLD' }];
   const current = [{ pairing_instance_key: 'PIK_NEW', pairing_id: '226', pairing_content_hash: 'H1', snapshot_key: 'SNAP_NEW' }];
 
-  const { rows, counts } = reconcileAssignments(prev, current, idGen('NEW'));
+  const { rows, counts } = reconcileAssignments(prev, current, current, idGen('NEW'));
 
   assert.equal(rows[0].assignment_id, 'A1', 'assignment_id se preserva');
   assert.equal(rows[0].INS, 'Juan Perez', 'INS se preserva');
@@ -40,7 +40,7 @@ test('REVIEW_SOURCE_CHANGED - mismo pairing_id, contenido distinto: NO relink si
   const prev = [{ assignment_id: 'A1', pairing_instance_key: 'PIK_OLD', pairing_id: '226', pairing_content_hash: 'H1', INS: 'Juan Perez', ACT: 'Simulador', source_snapshot_key: 'SNAP_OLD' }];
   const current = [{ pairing_instance_key: 'PIK_NEW', pairing_id: '226', pairing_content_hash: 'H2_DISTINTO', snapshot_key: 'SNAP_NEW' }];
 
-  const { rows, counts } = reconcileAssignments(prev, current, idGen('NEW'));
+  const { rows, counts } = reconcileAssignments(prev, current, current, idGen('NEW'));
 
   // La fila vieja se conserva intacta apuntando a su contenido/snapshot ORIGINAL.
   const oldRow = rows.find(r => r.assignment_id === 'A1');
@@ -62,7 +62,7 @@ test('ORPHANED_SOURCE_MISSING - el pairing_id desaparece por completo: se preser
   const prev = [{ assignment_id: 'A1', pairing_instance_key: 'PIK_OLD', pairing_id: '999', pairing_content_hash: 'H1', INS: 'Juan Perez', ACT: 'Linea', source_snapshot_key: 'SNAP_OLD' }];
   const current = [{ pairing_instance_key: 'PIK_NEW', pairing_id: '226', pairing_content_hash: 'H2', snapshot_key: 'SNAP_NEW' }];
 
-  const { rows, counts } = reconcileAssignments(prev, current, idGen('NEW'));
+  const { rows, counts } = reconcileAssignments(prev, current, current, idGen('NEW'));
 
   const orphan = rows.find(r => r.assignment_id === 'A1');
   assert.equal(orphan.assignment_status, 'ORPHANED_SOURCE_MISSING');
@@ -75,7 +75,8 @@ test('ORPHANED_SOURCE_MISSING - el pairing_id desaparece por completo: se preser
 });
 
 test('NEW - pairing sin ninguna asignacion previa recibe assignment_id nuevo e INS/ACT en blanco', () => {
-  const { rows, counts } = reconcileAssignments([], [{ pairing_instance_key: 'PIK1', pairing_id: '226', pairing_content_hash: 'H1', snapshot_key: 'SNAP1' }], idGen('NEW'));
+  const onlyPairing = [{ pairing_instance_key: 'PIK1', pairing_id: '226', pairing_content_hash: 'H1', snapshot_key: 'SNAP1' }];
+  const { rows, counts } = reconcileAssignments([], onlyPairing, onlyPairing, idGen('NEW'));
   assert.equal(rows.length, 1);
   assert.equal(rows[0].assignment_status, 'NEW');
   assert.equal(rows[0].INS, '');
@@ -91,7 +92,7 @@ test('multiples assignment_id para el mismo pairing_instance_key NO se colapsan'
   ];
   const current = [{ pairing_instance_key: 'PIK1', pairing_id: '226', pairing_content_hash: 'H1', snapshot_key: 'SNAP1' }];
 
-  const { rows, counts } = reconcileAssignments(prev, current, idGen('NEW'));
+  const { rows, counts } = reconcileAssignments(prev, current, current, idGen('NEW'));
 
   assert.equal(rows.length, 2, 'ambas asignaciones deben sobrevivir, no colapsarse en una');
   assert.equal(counts.preserved, 2);
@@ -110,7 +111,7 @@ test('multiples assignment_id que relinkean al mismo pairing en un snapshot NUEV
   ];
   const current = [{ pairing_instance_key: 'PIK_NEW', pairing_id: '226', pairing_content_hash: 'H1', snapshot_key: 'SNAP_NEW' }];
 
-  const { rows, counts } = reconcileAssignments(prev, current, idGen('NEW'));
+  const { rows, counts } = reconcileAssignments(prev, current, current, idGen('NEW'));
 
   assert.equal(rows.length, 2, 'ambas asignaciones deben sobrevivir el relink, no colapsarse en una');
   assert.equal(counts.relinked, 2);
@@ -124,10 +125,64 @@ test('idempotencia total - correr reconcile dos veces sobre el mismo snapshot no
   const prev = [{ assignment_id: 'A1', pairing_instance_key: 'PIK1', pairing_id: '226', pairing_content_hash: 'H1', INS: 'Juan Perez', ACT: 'Linea', source_snapshot_key: 'SNAP1' }];
   const current = [{ pairing_instance_key: 'PIK1', pairing_id: '226', pairing_content_hash: 'H1', snapshot_key: 'SNAP1' }];
 
-  const run1 = reconcileAssignments(prev, current, idGen('NEW'));
-  const run2 = reconcileAssignments(run1.rows, current, idGen('NEW'));
+  const run1 = reconcileAssignments(prev, current, current, idGen('NEW'));
+  const run2 = reconcileAssignments(run1.rows, current, current, idGen('NEW'));
 
   assert.deepEqual(run1.rows.map(r => ({ id: r.assignment_id, ins: r.INS, act: r.ACT, status: r.assignment_status })),
     run2.rows.map(r => ({ id: r.assignment_id, ins: r.INS, act: r.ACT, status: r.assignment_status })));
   assert.equal(run2.counts.created, 0);
+});
+
+// --- currentPairingsForMatching vs currentPairingsForCreation (D22, mision <reconciliation_fix>) ---
+
+test('F8 - asignacion existente contra un pairing en REVIEW sigue ACTIVE, no ORPHANED, solo por estar REVIEW', () => {
+  const prev = [{ assignment_id: 'A1', pairing_instance_key: 'PIK1', pairing_id: '226', pairing_content_hash: 'H1', INS: 'Juan Perez', ACT: 'Simulador', source_snapshot_key: 'SNAP1' }];
+  // El pairing sigue presente (mismo PIK/hash) pero este mes evaluo REVIEW (p.ej. cambio de ruta).
+  const reviewPairing = { pairing_instance_key: 'PIK1', pairing_id: '226', pairing_content_hash: 'H1', snapshot_key: 'SNAP1', eligibility_status: 'REVIEW' };
+  const matching = [reviewPairing];
+  const creation = []; // REVIEW nunca es candidato a NEW
+
+  const { rows, counts } = reconcileAssignments(prev, matching, creation, idGen('NEW'));
+
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].assignment_status, 'ACTIVE', 'debe seguir ACTIVE aunque el pairing actual este en REVIEW');
+  assert.equal(rows[0].INS, 'Juan Perez', 'INS no se pierde por el cambio de elegibilidad');
+  assert.equal(counts.preserved, 1);
+  assert.equal(counts.orphaned, 0, 'NO debe contarse como huerfana solo por estar REVIEW');
+});
+
+test('F8b - asignacion existente relinkea (RELINKED_IDENTICAL) contra un pairing en REVIEW en snapshot nuevo', () => {
+  const prev = [{ assignment_id: 'A1', pairing_instance_key: 'PIK_OLD', pairing_id: '226', pairing_content_hash: 'H1', INS: 'Juan Perez', ACT: '', source_snapshot_key: 'SNAP_OLD' }];
+  const reviewPairing = { pairing_instance_key: 'PIK_NEW', pairing_id: '226', pairing_content_hash: 'H1', snapshot_key: 'SNAP_NEW', eligibility_status: 'REVIEW' };
+
+  const { rows, counts } = reconcileAssignments(prev, [reviewPairing], [], idGen('NEW'));
+
+  assert.equal(rows[0].assignment_status, 'RELINKED_IDENTICAL');
+  assert.equal(rows[0].INS, 'Juan Perez');
+  assert.equal(counts.relinked, 1);
+  assert.equal(counts.orphaned, 0);
+});
+
+test('F9 - pairing_id realmente ausente de TODO currentPairingsForMatching si produce ORPHANED_SOURCE_MISSING', () => {
+  const prev = [{ assignment_id: 'A1', pairing_instance_key: 'PIK1', pairing_id: '999', pairing_content_hash: 'H1', INS: 'Juan Perez', ACT: '', source_snapshot_key: 'SNAP1' }];
+  const matching = [{ pairing_instance_key: 'PIK2', pairing_id: '226', pairing_content_hash: 'H2', snapshot_key: 'SNAP1', eligibility_status: 'ELIGIBLE' }];
+
+  const { rows, counts } = reconcileAssignments(prev, matching, matching, idGen('NEW'));
+
+  assert.equal(rows.find(r => r.assignment_id === 'A1').assignment_status, 'ORPHANED_SOURCE_MISSING');
+  assert.equal(counts.orphaned, 1);
+});
+
+test('F10/F11 - NEW solo se genera para currentPairingsForCreation (ELIGIBLE); un pairing REVIEW presente en matching nunca genera NEW', () => {
+  const eligiblePairing = { pairing_instance_key: 'PIK_E', pairing_id: '100', pairing_content_hash: 'HE', snapshot_key: 'SNAP1', eligibility_status: 'ELIGIBLE' };
+  const reviewPairing = { pairing_instance_key: 'PIK_R', pairing_id: '200', pairing_content_hash: 'HR', snapshot_key: 'SNAP1', eligibility_status: 'REVIEW' };
+  const matching = [eligiblePairing, reviewPairing];
+  const creation = [eligiblePairing]; // solo el subconjunto ELIGIBLE
+
+  const { rows, counts } = reconcileAssignments([], matching, creation, idGen('NEW'));
+
+  assert.equal(rows.length, 1, 'solo debe crearse fila NEW para el pairing ELIGIBLE');
+  assert.equal(rows[0].pairing_id, '100');
+  assert.equal(counts.created, 1);
+  assert.ok(!rows.some(r => r.pairing_id === '200'), 'el pairing REVIEW no debe generar fila NEW aunque este en currentPairingsForMatching');
 });

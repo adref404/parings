@@ -5,9 +5,13 @@
  * por AssignmentReconciler), BP se calcula en memoria (D8 en docs/DECISIONS.md) para evitar
  * formulas dependientes de locale y el error #N/A con INS vacio (Q20).
  *
- * D13 (docs/DECISIONS.md): solo los pairings con eligibility_status=ELIGIBLE se ofrecen como
- * candidatos a AssignmentReconciler; los REVIEW quedan documentados en _PAIRINGS_DATA pero no
- * generan fila en RESUMEN (RESUMEN es la tabla de asignaciones, no de candidatos en revision).
+ * D13/D22 (docs/DECISIONS.md): solo los pairings con eligibility_status=ELIGIBLE pueden generar una
+ * fila NUEVA (RESUMEN es la tabla de asignaciones, no de candidatos en revision); los REVIEW quedan
+ * completamente documentados en _PAIRINGS_DATA. Pero TODO el snapshot (ELIGIBLE + REVIEW) se ofrece
+ * a AssignmentReconciler para decidir el destino de una asignacion HUMANA ya existente: un pairing
+ * que una fila humana ya reclamaba y que este mes paso a REVIEW sigue presente en Carmen Gold, asi
+ * que su fila sigue ACTIVE/RELINKED_IDENTICAL (la decision humana no se borra) en vez de caer en
+ * ORPHANED_SOURCE_MISSING solo por el cambio de elegibilidad.
  * D14: Fecha/Inicio/Fin se escriben como TEXTO "DD/MM/YYYY" (nunca como Date nativo de JS) para
  * eliminar por diseño cualquier riesgo de drift UTC/local (Seccion 21).
  */
@@ -23,6 +27,7 @@ if (typeof module !== 'undefined' && module.exports) {
   var duDowCode = __DateUtil55.duDowCode;
   var duParseDisplayDate = __DateUtil55.duParseDisplayDate;
   var duEpochDay = __DateUtil55.duEpochDay;
+  var duCanonicalDisplayDate = __DateUtil55.duCanonicalDisplayDate;
   var reconcileAssignments = require('./40_Reconciliation.js').reconcileAssignments;
 }
 
@@ -57,12 +62,22 @@ var SummaryRenderer = {
           source_snapshot_key: r.source_snapshot_key,
           INS: r.INS || '',
           ACT: r.ACT || '',
-          Fecha: r.Fecha || '', DiaSEM: r.DiaSEM || '', Vuelo: r.Vuelo || '',
-          Ruta: r.Ruta || '', Inicio: r.Inicio || '', Fin: r.Fin || '',
+          // Fecha/Inicio/Fin pueden llegar como Date nativo (celda DATE real del Spreadsheet LIVE,
+          // via SheetStructure.readResumenRows/getValues) o como texto ya escrito por una corrida
+          // anterior de este mismo pipeline (D14). Se canonicalizan AQUI a "DD/MM/YYYY": si la fila
+          // termina en REVIEW_SOURCE_CHANGED/ORPHANED_SOURCE_MISSING, lo que mergeRow preserva en
+          // previousDisplay (40_Reconciliation.js) y buildResumenRowArray reescribe en RESUMEN debe
+          // respetar siempre D14 -- nunca un objeto Date crudo -- y resumenSortKey_ (mas abajo) debe
+          // poder reparsearlo para ordenar por fecha real.
+          Fecha: duCanonicalDisplayDate(r.Fecha), DiaSEM: r.DiaSEM || '', Vuelo: r.Vuelo || '',
+          Ruta: r.Ruta || '', Inicio: duCanonicalDisplayDate(r.Inicio), Fin: duCanonicalDisplayDate(r.Fin),
         };
       });
 
-    var reconciliation = reconcileAssignments(previousAssignments, eligible, idGenerator);
+    // currentPairingsForMatching = TODO el snapshot (evaluatedPairings, ELIGIBLE+REVIEW): decide el
+    // destino de asignaciones humanas existentes. currentPairingsForCreation = solo ELIGIBLE: unico
+    // universo que puede originar una fila NEW. Ver D22 en docs/DECISIONS.md.
+    var reconciliation = reconcileAssignments(previousAssignments, evaluatedPairings, eligible, idGenerator);
 
     var bpByIns = {};
     diccionario.forEach(function (d) { if (d.INS) bpByIns[d.INS] = d.BP; });

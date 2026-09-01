@@ -91,3 +91,51 @@ test('duParseDate - invalido devuelve null, no lanza', () => {
   assert.equal(du.duParseDate(null), null);
   assert.equal(du.duParseDate('no-es-fecha'), null);
 });
+
+// --- duCanonicalDisplayDate (F1-F4, mision <date_normalization_fix>) ---------------------------
+// El Spreadsheet LIVE guarda Fecha/Inicio/Fin como celda DATE real; Apps Script las entrega como
+// `Date` nativo via getValues(). deriveVisiblePairingFacts (55_RenderSummary.js) siempre produce
+// texto "DD/MM/YYYY" (D14). Sin canonicalizar, un Date real jamas calzaria con su propio texto
+// equivalente (String(Date) incluye hora/timezone).
+
+test('duCanonicalDisplayDate - Date real de Sheets equivale a texto "02/09/2026" (F1)', () => {
+  // new Date(y, m0, d): construido con componentes LOCALES, igual que Apps Script construye el
+  // Date de una celda DATE a partir del timezone del proyecto (nunca new Date(string), que parsea
+  // como UTC y podria correr el dia al leerlo con getters locales).
+  const realSheetDate = new Date(2026, 8, 2); // mes 0-index -> septiembre
+  assert.equal(du.duCanonicalDisplayDate(realSheetDate), '02/09/2026');
+  assert.equal(du.duCanonicalDisplayDate(realSheetDate), du.duCanonicalDisplayDate('02/09/2026'), 'Date real y texto DD/MM/YYYY del mismo dia deben canonicalizar IGUAL');
+});
+
+test('duCanonicalDisplayDate - "2/9/2026" (d/m/yyyy) equivale a "02/09/2026" (dd/mm/yyyy) (F2)', () => {
+  assert.equal(du.duCanonicalDisplayDate('2/9/2026'), '02/09/2026');
+  assert.equal(du.duCanonicalDisplayDate('2/9/2026'), du.duCanonicalDisplayDate('02/09/2026'));
+});
+
+test('duCanonicalDisplayDate - dia distinto NO coincide (F3)', () => {
+  assert.notEqual(du.duCanonicalDisplayDate('03/09/2026'), du.duCanonicalDisplayDate('02/09/2026'));
+  assert.notEqual(du.duCanonicalDisplayDate(new Date(2026, 8, 3)), du.duCanonicalDisplayDate('02/09/2026'));
+});
+
+test('duCanonicalDisplayDate - un Date real nunca se desplaza de dia sin importar el timezone del proceso (timezone-safe)', () => {
+  // duCivilFromJsDate usa los mismos getters LOCALES con los que se construyo el Date de prueba
+  // (componentes y-m-d, no epoch/UTC), asi que el dia civil no puede correrse sin importar el TZ
+  // del proceso Node/Apps Script que ejecuta el codigo -- ni siquiera en un borde de anio.
+  assert.equal(du.duCanonicalDisplayDate(new Date(2026, 0, 1)), '01/01/2026');
+  assert.equal(du.duCanonicalDisplayDate(new Date(2026, 11, 31)), '31/12/2026');
+});
+
+test('duCanonicalDisplayDate - valor vacio devuelve cadena vacia, no lanza', () => {
+  assert.equal(du.duCanonicalDisplayDate(''), '');
+  assert.equal(du.duCanonicalDisplayDate(null), '');
+  assert.equal(du.duCanonicalDisplayDate(undefined), '');
+});
+
+test('duCanonicalDisplayDate - texto no reconocible como fecha devuelve cadena vacia, no lanza', () => {
+  assert.equal(du.duCanonicalDisplayDate('no es fecha'), '');
+  assert.equal(du.duCanonicalDisplayDate('2026-09-02'), '', 'formato ISO no es DD/MM/YYYY, no debe adivinarse');
+});
+
+test('duCanonicalDisplayDate - Date invalido (celda corrupta) devuelve cadena vacia, nunca "NaN/NaN/NaN"', () => {
+  assert.equal(du.duCanonicalDisplayDate(new Date('esto-no-es-una-fecha')), '');
+});

@@ -232,6 +232,101 @@ test('compareBaselineWithSnapshot - legacyTechnicalLinkageMissing refleja el bas
   assert.equal(report.summary.assignmentsBaseline, 2);
 });
 
+// --- normalizacion de fechas (F4, mision <date_normalization_fix>) ------------------------------
+
+test('compareBaselineWithSnapshot - Date real de Sheets en Fecha/Inicio/Fin compara EXACT contra el pairing actual (F4, bug de fechas)', () => {
+  const pairings = evaluatedPairings([leg({})], 'SNAP1'); // Fecha/Inicio/Fin reales = 2026-09-01
+  const facts = deriveVisiblePairingFacts(pairings[0]); // texto "01/09/2026" (D14)
+  const baseline = [legacyRow({
+    assignment_id: 'A1', Pairing: '226', pairing_content_hash: 'LEGACY_HASH_226',
+    Vuelo: facts.Vuelo, Ruta: facts.Ruta,
+    // Simula la celda DATE real del Spreadsheet LIVE (Apps Script la entrega como Date nativo, no
+    // como texto): mismo dia civil que facts.Fecha/Inicio/Fin, representado como objeto Date.
+    Fecha: new Date(2026, 8, 1), Inicio: new Date(2026, 8, 1), Fin: new Date(2026, 8, 1),
+  })];
+
+  const report = compareBaselineWithSnapshot(baseline, pairings);
+
+  assert.equal(report.summary.visibleExact, 1, 'Date real y texto DD/MM/YYYY del mismo dia deben canonicalizar igual, no DISTINCT');
+  assert.equal(report.summary.visiblePartial, 0);
+  assert.equal(report.summary.visibleDistinct, 0);
+  assert.deepEqual(report.visibleExactHashDifferentPairingIds, ['226']);
+});
+
+test('compareBaselineWithSnapshot - Date real con dia realmente distinto SI se reporta DISTINCT', () => {
+  const pairings = evaluatedPairings([leg({})], 'SNAP1'); // 2026-09-01
+  const baseline = [legacyRow({
+    assignment_id: 'A1', Pairing: '226', pairing_content_hash: 'LEGACY_HASH_226',
+    Vuelo: '999', Ruta: 'XXX-YYY-XXX',
+    Fecha: new Date(2020, 2, 15), Inicio: new Date(2020, 2, 15), Fin: new Date(2020, 2, 16),
+  })];
+
+  const report = compareBaselineWithSnapshot(baseline, pairings);
+
+  assert.equal(report.summary.visibleDistinct, 1);
+  assert.deepEqual(report.visibleDistinctPairingIds, ['226']);
+});
+
+// --- diagnostico de elegibilidad del baseline (F5-F7, mision <baseline_eligibility_diagnostic>) --
+
+test('compareBaselineWithSnapshot - pairing presente y ELIGIBLE se reporta como presente+ELIGIBLE (F5)', () => {
+  const pairings = evaluatedPairings([leg({})], 'SNAP1'); // MIA configurado -> ELIGIBLE
+  const facts = deriveVisiblePairingFacts(pairings[0]);
+  const baseline = [legacyRow({ assignment_id: 'A1', Pairing: '226', ...facts })];
+
+  const report = compareBaselineWithSnapshot(baseline, pairings);
+
+  assert.equal(report.summary.pairingIdsPresentEligible, 1);
+  assert.equal(report.summary.pairingIdsPresentReview, 0);
+  assert.deepEqual(report.presentEligiblePairingIds, ['226']);
+  assert.deepEqual(report.presentReviewPairingIds, []);
+});
+
+test('compareBaselineWithSnapshot - pairing presente pero REVIEW NO se reporta como ausente (F6)', () => {
+  // Ruta BOG no esta configurada (routes = MIA/SCL) -> eligibility_status REVIEW, pero el
+  // pairing_id 226 SIGUE existiendo en el snapshot actual.
+  const reviewRows = [leg({ arrival_airport_code: 'BOG' }), leg({ flight_number: '508', departure_airport_code: 'BOG', arrival_airport_code: 'LIM' })];
+  const reviewPairings = evaluatedPairings(reviewRows, 'SNAP1');
+  assert.equal(reviewPairings[0].eligibility_status, 'REVIEW');
+  const baseline = [legacyRow({ assignment_id: 'A1', Pairing: '226' })];
+
+  const report = compareBaselineWithSnapshot(baseline, reviewPairings);
+
+  assert.equal(report.summary.pairingIdsAbsent, 0, 'presente pero REVIEW no debe contarse como ausente');
+  assert.deepEqual(report.absentPairingIds, []);
+  assert.equal(report.summary.pairingIdsPresent, 1);
+  assert.equal(report.summary.pairingIdsPresentReview, 1);
+  assert.deepEqual(report.presentReviewPairingIds, ['226']);
+});
+
+test('compareBaselineWithSnapshot - eligibility_reason se reporta por pairing_id y agrupado (F7)', () => {
+  const reviewRows = [leg({ arrival_airport_code: 'BOG' }), leg({ flight_number: '508', departure_airport_code: 'BOG', arrival_airport_code: 'LIM' })];
+  const reviewPairings = evaluatedPairings(reviewRows, 'SNAP1');
+  assert.equal(reviewPairings[0].eligibility_reason, 'ROUTE_NOT_CONFIGURED');
+  const baseline = [legacyRow({ assignment_id: 'A1', Pairing: '226' })];
+
+  const report = compareBaselineWithSnapshot(baseline, reviewPairings);
+
+  assert.deepEqual(report.reviewPairingReasons, [{ pairing_id: '226', eligibility_reason: 'ROUTE_NOT_CONFIGURED' }]);
+  assert.equal(report.reviewReasonCounts['ROUTE_NOT_CONFIGURED'], 1);
+});
+
+test('compareBaselineWithSnapshot - un pairing en REJECTED (definido pero no producido hoy) NO se etiqueta como REVIEW', () => {
+  // 35_WBRules.js nunca emite REJECTED (solo ELIGIBLE/REVIEW), pero el valor existe en
+  // ELIGIBILITY_STATUS (00_Constants.js): el diagnostico no debe conflar un estado mas definitivo
+  // con "en revision" si algun dia se produjera.
+  const rejectedPairing = Object.assign({}, evaluatedPairings([leg({})], 'SNAP1')[0], { eligibility_status: 'REJECTED', eligibility_reason: 'ALGO' });
+  const baseline = [legacyRow({ assignment_id: 'A1', Pairing: '226' })];
+
+  const report = compareBaselineWithSnapshot(baseline, [rejectedPairing]);
+
+  assert.equal(report.summary.pairingIdsPresent, 1, 'sigue contando como presente');
+  assert.equal(report.summary.pairingIdsPresentEligible, 0);
+  assert.equal(report.summary.pairingIdsPresentReview, 0, 'REJECTED no debe contarse como REVIEW');
+  assert.deepEqual(report.presentReviewPairingIds, []);
+  assert.deepEqual(report.reviewPairingReasons, [], 'REJECTED no debe generar una entrada de razon de REVIEW');
+});
+
 // --- read-only / no side effects (M8) -----------------------------------------------------------
 
 test('compareBaselineWithSnapshot - es de solo lectura: no muta baseline ni currentPairings', () => {

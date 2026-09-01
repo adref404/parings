@@ -14,10 +14,18 @@
  *   C) pairing_id igual + pairing_content_hash distinto -> REVIEW_SOURCE_CHANGED
  *      (NO se relinkea en silencio: la fila vieja se conserva apuntando a su snapshot/contenido
  *      original con este estado; el pairing nuevo con contenido cambiado aparece ademas como NEW)
- *   D) ningun pairing_id coincide en el snapshot actual -> ORPHANED_SOURCE_MISSING
+ *   D) ningun pairing_id coincide en TODO el snapshot actual -> ORPHANED_SOURCE_MISSING
  *      (se preserva la fila completa, nunca se borra)
- *   E) pairing actual sin ninguna fila previa que lo reclame (via A o B) -> NEW
+ *   E) pairing ELIGIBLE sin ninguna fila previa que lo reclame (via A o B) -> NEW
  *      (assignment_id nuevo via idGenerator inyectado; INS/ACT en blanco)
+ *
+ * D22 (docs/DECISIONS.md): los casos A-D se resuelven contra `currentPairingsForMatching`, que debe
+ * ser TODO el snapshot actual (ELIGIBLE + REVIEW) -- un pairing_id que una asignacion humana ya
+ * reclamaba y que este mes paso a REVIEW (p.ej. cambio de ruta) sigue existiendo en Carmen Gold, asi
+ * que NO debe leerse como ORPHANED_SOURCE_MISSING solo por eso; la decision humana existente
+ * (ACTIVE/RELINKED_IDENTICAL) se preserva igual. El caso E (NEW) en cambio solo mira
+ * `currentPairingsForCreation` (tipicamente el subconjunto ELIGIBLE): nunca se crea una fila NEW
+ * para un pairing en REVIEW.
  */
 
 if (typeof module !== 'undefined' && module.exports) {
@@ -28,13 +36,19 @@ if (typeof module !== 'undefined' && module.exports) {
 /**
  * @param {Array} previousAssignments Filas previas de RESUMEN con assignment_id no vacio, cada una
  *   {assignment_id, pairing_instance_key, pairing_id, pairing_content_hash, INS, ACT, source_snapshot_key}.
- * @param {Array} currentPairings Pairings ensamblados del snapshot actual, cada uno con
- *   {pairing_instance_key, pairing_id, pairing_content_hash, snapshot_key, ...campos derivados}.
+ * @param {Array} currentPairingsForMatching Universo COMPLETO del snapshot actual (ELIGIBLE +
+ *   REVIEW), usado para decidir el destino de cada asignacion HUMANA existente (casos A-D). Cada
+ *   uno con {pairing_instance_key, pairing_id, pairing_content_hash, snapshot_key, ...}. Debe ser
+ *   TODO el snapshot: un pairing_id que sigue presente pero paso a REVIEW este mes no es lo mismo
+ *   que un pairing_id realmente ausente de Carmen Gold (ver D22 en docs/DECISIONS.md).
+ * @param {Array} currentPairingsForCreation Subconjunto (tipicamente solo ELIGIBLE) usado
+ *   exclusivamente para el caso E (NEW): un pairing en REVIEW nunca genera fila nueva, aunque este
+ *   presente en currentPairingsForMatching.
  * @param {Function} idGenerator () => string, genera un assignment_id nuevo y unico.
  */
-function reconcileAssignments(previousAssignments, currentPairings, idGenerator) {
+function reconcileAssignments(previousAssignments, currentPairingsForMatching, currentPairingsForCreation, idGenerator) {
   var currentByPik = {};
-  currentPairings.forEach(function (p) { currentByPik[p.pairing_instance_key] = p; });
+  currentPairingsForMatching.forEach(function (p) { currentByPik[p.pairing_instance_key] = p; });
 
   var matchedPiks = {};
   var outRows = [];
@@ -43,7 +57,9 @@ function reconcileAssignments(previousAssignments, currentPairings, idGenerator)
   previousAssignments.forEach(function (prev) {
     var exactCurrent = currentByPik[prev.pairing_instance_key];
 
-    // Caso A: mismo snapshot, mismo contenido (re-ejecucion idempotente).
+    // Caso A: mismo snapshot, mismo contenido (re-ejecucion idempotente). Se busca en TODO el
+    // snapshot (ELIGIBLE + REVIEW): la decision humana existente no se elimina solo porque el
+    // pairing haya pasado a REVIEW este mes.
     if (exactCurrent && exactCurrent.pairing_content_hash === prev.pairing_content_hash) {
       matchedPiks[exactCurrent.pairing_instance_key] = true;
       counts.preserved++;
@@ -52,12 +68,12 @@ function reconcileAssignments(previousAssignments, currentPairings, idGenerator)
     }
 
     // Buscar por pairing_id en TODO el snapshot actual (puede estar en otro pairing_instance_key
-    // porque el snapshot cambio, aunque el pairing_id se repita).
-    var sameIdCandidates = currentPairings.filter(function (p) { return String(p.pairing_id) === String(prev.pairing_id); });
+    // porque el snapshot cambio, aunque el pairing_id se repita; y puede estar en REVIEW).
+    var sameIdCandidates = currentPairingsForMatching.filter(function (p) { return String(p.pairing_id) === String(prev.pairing_id); });
 
     var identicalContent = sameIdCandidates.filter(function (p) { return p.pairing_content_hash === prev.pairing_content_hash; })[0];
     if (identicalContent) {
-      // Caso B: nuevo snapshot, contenido identico -> relink.
+      // Caso B: nuevo snapshot, contenido identico -> relink (aunque el pairing este en REVIEW).
       matchedPiks[identicalContent.pairing_instance_key] = true;
       counts.relinked++;
       outRows.push(mergeRow(prev, identicalContent, ASSIGNMENT_STATUS.RELINKED_IDENTICAL));
@@ -72,13 +88,15 @@ function reconcileAssignments(previousAssignments, currentPairings, idGenerator)
       return;
     }
 
-    // Caso D: el pairing_id ya no aparece en absoluto en el snapshot actual.
+    // Caso D: el pairing_id ya no aparece en absoluto en TODO el snapshot actual (ni ELIGIBLE ni
+    // REVIEW): recien aqui es correcto decir que la fuente lo perdio.
     counts.orphaned++;
     outRows.push(mergeRow(prev, null, ASSIGNMENT_STATUS.ORPHANED_SOURCE_MISSING));
   });
 
-  // Caso E: pairings del snapshot actual que ninguna fila previa reclamo.
-  currentPairings.forEach(function (p) {
+  // Caso E: pairings ELIGIBLE (currentPairingsForCreation) que ninguna fila previa reclamo. Un
+  // pairing en REVIEW jamas llega aqui aunque este en currentPairingsForMatching.
+  currentPairingsForCreation.forEach(function (p) {
     if (matchedPiks[p.pairing_instance_key]) return;
     counts.created++;
     outRows.push({

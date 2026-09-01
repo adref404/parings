@@ -249,7 +249,9 @@ function wbMenuCompararSnapshotConResumen() {
       'Con vinculación técnica ausente (legacy-unlinked): ' + s.legacyTechnicalLinkageMissing,
       '',
       'Presentes en snapshot actual: ' + s.pairingIdsPresent,
-      'Ausentes del snapshot actual: ' + s.pairingIdsAbsent,
+      '  Presentes y ELIGIBLE: ' + s.pairingIdsPresentEligible,
+      '  Presentes pero en REVISIÓN (siguen en Carmen Gold, no ausentes): ' + s.pairingIdsPresentReview,
+      'Ausentes del snapshot actual (realmente ya no existen): ' + s.pairingIdsAbsent,
       '',
       'Coincidencia visible exacta (Fecha/Vuelo/Ruta/Inicio/Fin): ' + s.visibleExact,
       'Coincidencia visible parcial: ' + s.visiblePartial,
@@ -263,6 +265,16 @@ function wbMenuCompararSnapshotConResumen() {
       lines.push('', 'Visible IGUAL pero hash distinto (indicio de incompatibilidad de contrato de hash legacy): ' + report.visibleExactHashDifferentPairingIds.join(', '));
     }
     if (report.visibleDistinctPairingIds.length) lines.push('', 'Visible DISTINTO (cambio real de contenido): ' + report.visibleDistinctPairingIds.join(', '));
+    if (Object.keys(report.reviewReasonCounts).length) {
+      lines.push('', 'Razones de REVISIÓN entre los baseline (agrupadas):');
+      Object.keys(report.reviewReasonCounts).sort().forEach(function (reason) {
+        lines.push('  ' + reason + ': ' + report.reviewReasonCounts[reason]);
+      });
+    }
+    if (report.reviewPairingReasons.length) {
+      lines.push('', 'Pairing IDs del baseline en REVISIÓN (motivo):');
+      report.reviewPairingReasons.forEach(function (r) { lines.push('  ' + r.pairing_id + ' -> ' + r.eligibility_reason); });
+    }
     lines.push('', 'Esto fue un DRY RUN de solo lectura: no se modificó snapshot, RESUMEN, hashes ni assignment_id.');
     ui.alert('Comparar snapshot con RESUMEN actual', lines.join('\n'), ui.ButtonSet.OK);
   } catch (e) {

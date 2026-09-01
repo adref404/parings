@@ -75,6 +75,27 @@ test('SummaryRenderer.build - ORPHANED_SOURCE_MISSING conserva Fecha/Vuelo/Ruta/
   assert.equal(matrix[orphanIdx][RESUMEN_COLUMNS.Fin], '17/08/2026');
 });
 
+test('SummaryRenderer.build - ORPHANED_SOURCE_MISSING con Fecha/Inicio/Fin leidas como Date nativo de Sheets se preservan como texto DD/MM/YYYY, nunca un Date crudo (D14, bug de fechas)', () => {
+  const pairings = evaluatedPairings([leg({})], 'SNAP1');
+  const previous = [{
+    pairing_instance_key: 'PIK_VIEJO', Pairing: '999', pairing_content_hash: 'H_VIEJO',
+    assignment_id: 'A_ORPH', INS: 'Juan Perez', ACT: 'Linea', source_snapshot_key: 'SNAP_VIEJO',
+    // Simula una celda DATE real del Spreadsheet LIVE (Apps Script entrega Date nativo via getValues()).
+    Fecha: new Date(2026, 7, 15), DiaSEM: 'Sábado', Vuelo: '999', Ruta: 'LIM-JFK-LIM',
+    Inicio: new Date(2026, 7, 15), Fin: new Date(2026, 7, 17),
+  }];
+
+  const { matrix, reconciliation } = SummaryRenderer.build(pairings, previous, [], idGen);
+  const orphanIdx = matrix.findIndex(r => r[RESUMEN_COLUMNS.assignment_id] === 'A_ORPH');
+
+  assert.ok(orphanIdx !== -1);
+  assert.equal(reconciliation.rows.find(r => r.assignment_id === 'A_ORPH').assignment_status, 'ORPHANED_SOURCE_MISSING');
+  assert.equal(matrix[orphanIdx][RESUMEN_COLUMNS.Fecha], '15/08/2026');
+  assert.equal(typeof matrix[orphanIdx][RESUMEN_COLUMNS.Fecha], 'string', 'nunca debe escribirse un objeto Date crudo (D14)');
+  assert.equal(matrix[orphanIdx][RESUMEN_COLUMNS.Inicio], '15/08/2026');
+  assert.equal(matrix[orphanIdx][RESUMEN_COLUMNS.Fin], '17/08/2026');
+});
+
 test('SummaryRenderer.build - ordena por fecha real, no por el hash de pairing_instance_key', () => {
   const pairingSept5 = evaluatedPairings([leg({ flight_start_date_local_time: '2026-09-04', duty_presentation_date_at: '2026-09-04', duty_end_date_home_base_timezone: '2026-09-04', pairing_end_date: '2026-09-04', pairing_id: '300' })], 'SNAP1');
   const pairingSept1 = evaluatedPairings([leg({ pairing_id: '100' })], 'SNAP1'); // 2026-09-01 (default del fixture)
@@ -92,6 +113,28 @@ test('SummaryRenderer.build - pairings en REVIEW no generan fila en RESUMEN (D13
 
   const { matrix } = SummaryRenderer.build(pairings, [], [], idGen);
   assert.equal(matrix.length, 0);
+});
+
+test('SummaryRenderer.build - una asignacion existente NO cae en ORPHANED solo porque su pairing paso a REVIEW este mes; INS/ACT se preservan (F12/F8, D22)', () => {
+  const reviewRows = [leg({ arrival_airport_code: 'BOG' }), leg({ flight_number: '508', departure_airport_code: 'BOG', arrival_airport_code: 'LIM' })]; // ruta no configurada -> REVIEW
+  const pairings = evaluatedPairings(reviewRows, 'SNAP1');
+  assert.equal(pairings[0].eligibility_status, 'REVIEW');
+  const pik = pairings[0].pairing_instance_key;
+
+  const previous = [{
+    pairing_instance_key: pik, Pairing: '226', pairing_content_hash: pairings[0].pairing_content_hash,
+    assignment_id: 'A1', INS: 'Juan Perez', ACT: 'Simulador', source_snapshot_key: 'SNAP1',
+  }];
+
+  const { matrix, reconciliation } = SummaryRenderer.build(pairings, previous, [], idGen);
+
+  assert.equal(reconciliation.counts.preserved, 1);
+  assert.equal(reconciliation.counts.orphaned, 0, 'no debe contarse como huerfana solo por estar REVIEW este mes');
+  assert.equal(reconciliation.rows[0].assignment_status, 'ACTIVE');
+  assert.equal(matrix.length, 1, 'la fila humana existente debe seguir apareciendo en RESUMEN aunque el pairing este en REVIEW');
+  assert.equal(matrix[0][RESUMEN_COLUMNS.assignment_id], 'A1');
+  assert.equal(matrix[0][RESUMEN_COLUMNS.INS], 'Juan Perez');
+  assert.equal(matrix[0][RESUMEN_COLUMNS.ACT], 'Simulador');
 });
 
 test('SummaryRenderer.build - Fecha/Inicio/Fin se escriben como texto DD/MM/YYYY (D14, sin drift)', () => {

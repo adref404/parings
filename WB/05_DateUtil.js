@@ -137,6 +137,42 @@ function duParseDisplayDate(str) {
   return { y: parseInt(m[3], 10), m: parseInt(m[2], 10), d: parseInt(m[1], 10) };
 }
 
+/** true si `v` es un objeto Date nativo (p.ej. celda DATE real de Sheets leida via getValues()). */
+function duIsJsDate(v) {
+  return !!v && typeof v === 'object' &&
+    typeof v.getFullYear === 'function' && typeof v.getMonth === 'function' && typeof v.getDate === 'function';
+}
+
+/**
+ * Extrae {y,m,d} de un objeto Date nativo usando los getters LOCALES (getFullYear/getMonth/
+ * getDate), NUNCA los getters UTC (getUTCFullYear/etc). Apps Script construye ese Date a partir del
+ * serial de fecha de la celda interpretado en el timezone del proyecto -- el mismo que ve el
+ * usuario en el Spreadsheet -- por lo que los getters UTC podrian correr el dia entero segun el
+ * offset. Es la contraparte de lectura de `new Date(y, m-1, d)`: ambos usan componentes locales de
+ * forma simetrica, por lo que el dia civil nunca se desplaza sin importar el timezone del proceso
+ * que ejecuta el codigo (Node en tests, Apps Script en produccion).
+ */
+function duCivilFromJsDate(dateObj) {
+  return { y: dateObj.getFullYear(), m: dateObj.getMonth() + 1, d: dateObj.getDate() };
+}
+
+/**
+ * Canonicaliza un valor de fecha "visible" -- Date nativo de Sheets O texto 'd/m/yyyy'/'dd/mm/yyyy'
+ * -- al mismo formato civil DD/MM/YYYY, para poder comparar ambas representaciones sin depender de
+ * `String(Date)` (incluye hora/timezone, jamas calzaria con texto) ni de `new Date(string)`
+ * (Seccion 21: podria correr el dia). Devuelve '' si el valor esta vacio o no es reconocible como
+ * fecha en ninguno de los dos formatos.
+ */
+function duCanonicalDisplayDate(value) {
+  if (value === null || value === undefined || value === '') return '';
+  if (duIsJsDate(value)) {
+    if (isNaN(value.getTime())) return ''; // Date invalido (p.ej. celda corrupta): nunca "NaN/NaN/NaN"
+    return duFormatDisplay(duCivilFromJsDate(value));
+  }
+  var civil = duParseDisplayDate(value);
+  return civil ? duFormatDisplay(civil) : '';
+}
+
 /** Formatea {h,mi,s} como HH:MM. */
 function duFormatTimeShort(time) {
   if (!time) return '';
@@ -164,5 +200,6 @@ if (typeof module !== 'undefined' && module.exports) {
     duSortKey: duSortKey, duDowCode: duDowCode, duFormatDisplay: duFormatDisplay,
     duFormatIso: duFormatIso, duFormatTimeShort: duFormatTimeShort, duIsAllowedDow: duIsAllowedDow,
     duParseDisplayDate: duParseDisplayDate, DOW_CODES: DOW_CODES,
+    duIsJsDate: duIsJsDate, duCivilFromJsDate: duCivilFromJsDate, duCanonicalDisplayDate: duCanonicalDisplayDate,
   };
 }
