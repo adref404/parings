@@ -171,6 +171,47 @@ var Orchestrator = {
     return { applied: true, plan: plan };
   },
 
+  /**
+   * Diagnostico DRY-RUN (Fuente de datos -> "Comparar snapshot con RESUMEN actual", ver
+   * 58_LegacyBaseline.js): compara el baseline operacional (RESUMEN) contra el pairing actual del
+   * snapshot certificado usando hechos visibles (Fecha/Vuelo/Ruta/Inicio/Fin), no el hash legacy.
+   * Corre una consulta REAL de BigQuery (necesita filas, no solo un dry run de sintaxis) pero NUNCA
+   * escribe ninguna hoja ni registra un run en _RUNS: es estrictamente de solo lectura.
+   */
+  compareBaselineWithSnapshot: function () {
+    var ctx = Orchestrator.loadContext();
+    var configValidation = validateConfig(ctx.config, ctx.routes);
+    if (!configValidation.valid) throw new Error('Configuracion invalida: ' + configValidation.errors.join(' | '));
+    if (!isSnapshotCertified(ctx.config, true)) {
+      throw new Error('No hay snapshot certificado (ni siquiera en modo preview). Use "Detectar snapshots del mes" y "Certificar snapshot" primero.');
+    }
+
+    var loadIdentity = {
+      load_key_id: ctx.config.LOAD_KEY_ID, load_type_code: ctx.config.LOAD_TYPE_CODE,
+      load_version_id: ctx.config.LOAD_VERSION_ID, ingestion_datetime: ctx.config.INGESTION_DATETIME,
+    };
+    var sql = buildCertifiedLegSql(ctx.config, loadIdentity);
+    var bqResult = BigQueryGateway.runQuery(sql, ctx.config.BIGQUERY_JOB_PROJECT_ID, { maximumBytesBilled: ctx.config.MAXIMUM_BYTES_BILLED });
+    var rows = parseRowsWithSchema(bqResult.schema.fields, bqResult.rows);
+
+    var snapshotContext = buildSnapshotContext(ctx.config, loadIdentity);
+    var snapshotKey = computeSnapshotKey(snapshotContext);
+    var pairings = assemblePairings(rows, snapshotKey);
+    // Snapshot COMPLETO, sin filtrar por eligibility_status: un pairing_id que dejo de ser
+    // elegible este mes (p.ej. cambio de ruta/dia) no debe confundirse con "ya no existe en
+    // Carmen Gold" (D13 en docs/DECISIONS.md explica por que RESUMEN solo ve los ELIGIBLE).
+    var evaluated = pairings.map(function (p) {
+      return Object.assign({}, p, evaluateWbRules(p, ctx.config, ctx.routes, ctx.allowedDow));
+    });
+
+    var baseline = SheetStructure.readResumenRows(ctx.ss).rows;
+    var report = compareBaselineWithSnapshot(baseline, evaluated);
+    report.snapshotKey = snapshotKey;
+    report.bqJobId = bqResult.jobId;
+    report.bqBytesProcessed = bqResult.totalBytesProcessed;
+    return report;
+  },
+
   /** Ejecuta el pipeline completo. dryRun=true nunca escribe hojas operacionales. */
   runPipeline: function (dryRun) {
     var lock = LockService.getScriptLock();
@@ -190,6 +231,21 @@ var Orchestrator = {
       qa.push(QaService.q2RulesetCompatible(ctx.config));
       qa.push(QaService.q3SnapshotCertified(ctx.config, dryRun));
       failFastIfBlocked(qa, ['Q1', 'Q2', 'Q3']);
+
+      // Gate de baseline legacy (mision <publish_safety>): se evalua ANTES de tocar BigQuery para
+      // no facturar una consulta que de todas formas se va a bloquear. El preview (dryRun=true)
+      // NUNCA se bloquea por este gate (shouldBlockPublish lo ignora salvo en publicacion real).
+      // Ver 58_LegacyBaseline.js.
+      var baseline = SheetStructure.readResumenRows(ctx.ss).rows;
+      var publishGate = evaluatePublishGate(baseline);
+      if (shouldBlockPublish(dryRun, baseline)) {
+        var gateResult = {
+          runId: runId, dryRun: dryRun, status: 'PUBLISH_GATE_BLOCKED',
+          publishGate: publishGate, qa: qa, qaPassed: null,
+        };
+        recordRun(ctx.ss, runId, startedAt, new Date(), 'PUBLISH_GATE_BLOCKED', ctx, null, null, null, gateResult, 'PUBLISH', null, null);
+        return gateResult;
+      }
 
       var loadIdentity = {
         load_key_id: ctx.config.LOAD_KEY_ID, load_type_code: ctx.config.LOAD_TYPE_CODE,
@@ -226,7 +282,8 @@ var Orchestrator = {
       var pairingsDataRendered = PairingsDataRenderer.build(evaluated, pairingsDataContext);
       qa.push(QaService.q14PairingsDataSchemaCompatible(pairingsDataRendered.headers));
 
-      var baseline = SheetStructure.readResumenRows(ctx.ss).rows;
+      // `baseline` ya se leyo mas arriba (antes del gate de publicacion legacy); se reusa aqui,
+      // no se vuelve a leer la hoja.
       var diccionario = SheetStructure.readDiccionario(ctx.ss);
       var summary = SummaryRenderer.build(evaluated, baseline, diccionario, generateAssignmentId);
 
@@ -251,6 +308,7 @@ var Orchestrator = {
         assignmentsOrphaned: summary.reconciliation.counts.orphaned,
         contentChangesDetected: summary.reconciliation.counts.reviewChanged,
         assignmentsCreated: summary.reconciliation.counts.created,
+        publishGate: publishGate,
         qa: qa, qaPassed: preWriteFailures.length === 0,
       };
 

@@ -87,6 +87,26 @@ function resumenSortKey_(fechaDisplayText) {
   return d ? duEpochDay(d) : Number.MAX_SAFE_INTEGER;
 }
 
+/**
+ * Hechos visibles/operacionales de un pairing ensamblado, independientes de pairing_content_hash:
+ * Fecha/DiaSEM del primer leg y Vuelo/Ruta/Inicio/Fin derivados de sus campos crudos. Reutilizado
+ * por buildResumenRowArray (columnas Fecha/Vuelo/Ruta/Inicio/Fin de RESUMEN) y por
+ * 58_LegacyBaseline.js (diagnostico "Comparar snapshot con RESUMEN actual", que compara estos
+ * mismos hechos contra lo ya escrito en RESUMEN sin depender del hash legacy).
+ */
+function deriveVisiblePairingFacts(p) {
+  var firstLeg = p.legs[0];
+  var fechaDate = firstLeg ? duParseDate(firstLeg.row.flight_start_date_local_time) : null;
+  return {
+    Fecha: fechaDate ? duFormatDisplay(fechaDate) : '',
+    DiaSEM: fechaDate ? (DOW_ES[duDowCode(fechaDate)] || '') : '',
+    Vuelo: p.legs.map(function (l) { return l.row.flight_number; }).join('/'),
+    Ruta: p.route_display || '',
+    Inicio: p.occupied_start_date ? duFormatDisplay(p.occupied_start_date) : '',
+    Fin: p.occupied_end_date ? duFormatDisplay(p.occupied_end_date) : '',
+  };
+}
+
 function buildResumenRowArray(reconciledRow, bpByIns) {
   var p = reconciledRow.pairing; // null en REVIEW_SOURCE_CHANGED/ORPHANED_SOURCE_MISSING
   var row = new Array(RESUMEN_HEADERS.length).fill('');
@@ -104,14 +124,13 @@ function buildResumenRowArray(reconciledRow, bpByIns) {
   row[RESUMEN_COLUMNS.BP] = ins && bpByIns[ins] !== undefined ? bpByIns[ins] : '';
 
   if (p) {
-    var firstLeg = p.legs[0];
-    var fechaDate = firstLeg ? duParseDate(firstLeg.row.flight_start_date_local_time) : null;
-    row[RESUMEN_COLUMNS.Fecha] = fechaDate ? duFormatDisplay(fechaDate) : '';
-    row[RESUMEN_COLUMNS.DiaSEM] = fechaDate ? (DOW_ES[duDowCode(fechaDate)] || '') : '';
-    row[RESUMEN_COLUMNS.Vuelo] = p.legs.map(function (l) { return l.row.flight_number; }).join('/');
-    row[RESUMEN_COLUMNS.Ruta] = p.route_display || '';
-    row[RESUMEN_COLUMNS.Inicio] = p.occupied_start_date ? duFormatDisplay(p.occupied_start_date) : '';
-    row[RESUMEN_COLUMNS.Fin] = p.occupied_end_date ? duFormatDisplay(p.occupied_end_date) : '';
+    var facts = deriveVisiblePairingFacts(p);
+    row[RESUMEN_COLUMNS.Fecha] = facts.Fecha;
+    row[RESUMEN_COLUMNS.DiaSEM] = facts.DiaSEM;
+    row[RESUMEN_COLUMNS.Vuelo] = facts.Vuelo;
+    row[RESUMEN_COLUMNS.Ruta] = facts.Ruta;
+    row[RESUMEN_COLUMNS.Inicio] = facts.Inicio;
+    row[RESUMEN_COLUMNS.Fin] = facts.Fin;
   } else if (reconciledRow.previousDisplay) {
     // Sin pairing actual (REVIEW_SOURCE_CHANGED/ORPHANED_SOURCE_MISSING): la fila se conserva
     // REALMENTE intacta (D12) — se recupera lo que ya estaba escrito en RESUMEN, no se deja en blanco.
@@ -128,5 +147,8 @@ function buildResumenRowArray(reconciledRow, bpByIns) {
 }
 
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { SummaryRenderer: SummaryRenderer, buildResumenRowArray: buildResumenRowArray, DOW_ES: DOW_ES };
+  module.exports = {
+    SummaryRenderer: SummaryRenderer, buildResumenRowArray: buildResumenRowArray, DOW_ES: DOW_ES,
+    deriveVisiblePairingFacts: deriveVisiblePairingFacts,
+  };
 }

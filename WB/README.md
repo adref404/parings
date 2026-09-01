@@ -65,15 +65,35 @@ Técnicas (ocultas): `_PAIRINGS_DATA`, `_CONFIG`, `_RUNS`.
 sobrescriben en un refresh — ver `AssignmentReconciler` (`40_Reconciliation.js`) y
 `docs/DECISIONS.md` (D12/D13).
 
-## Proceso mensual (vía menú "Pairings WB" en el Sheet)
+## Menú "Pairings WB" (único menú de nivel superior)
+
+Cuatro acciones de usuario final, en lenguaje operacional (sin BigQuery/snapshot/hash/`_CONFIG`):
+
+1. **Actualizar Pairings WB** → el flujo normal de cada mes: revisa todo silenciosamente
+   (configuración, snapshot, seguridad del baseline), previsualiza, muestra un resumen humano y
+   publica SOLO si usted confirma y todos los controles pasan.
+2. **Previsualizar cambios** → el mismo cálculo, con resumen humano, en modo de solo lectura.
+3. **Ver estado del mes** → vistazo rápido y barato (sin BigQuery) al periodo configurado.
+4. **Ir a RESUMEN** → activa la hoja RESUMEN (valida `EXPECTED_SPREADSHEET_ID` antes de actuar).
+
+Toda herramienta técnica/administrativa vive bajo **Administración** (Configuración / Fuente de
+datos / Proceso y reconciliación / Históricos / Auditoría y QA), que termina en **Guía de uso y
+administración** (sidebar con el manual completo). Ver `docs/DECISIONS.md` D21.
+
+### Flujo mensual técnico (para administración)
 
 1. **Configurar año y mes** (si cambia el periodo).
 2. **Detectar snapshots del mes** → lista de cargas candidatas en Carmen Gold.
 3. **Certificar snapshot** → obligatorio antes de publicar (bloqueo real, no cosmético).
-4. **Previsualizar cálculo** → dry run completo, sin escribir nada.
-5. **Calcular y publicar mes** → escribe RESUMEN/Vuelos/Cronograma/_PAIRINGS_DATA, corre QA
-   post-escritura, y archiva el histórico automáticamente si `AUTO_ARCHIVE_ON_SUCCESS=TRUE`.
-6. **Ver último run** / **Ejecutar QA** para auditoría en cualquier momento.
+4. **Comparar snapshot con RESUMEN actual** (Fuente de datos) → diagnóstico DRY-RUN que separa "el
+   hash legacy no es compatible" de "el pairing realmente cambió", comparando hechos visibles
+   (Fecha/Vuelo/Ruta/Inicio/Fin) en vez del hash. Necesario mientras el baseline tenga asignaciones
+   humanas migradas sin `pairing_instance_key`/`source_snapshot_key` (ver D21): publicar queda
+   bloqueado hasta resolverlo — no hay forma de "forzar" el bloqueo.
+5. **Previsualización técnica** (Proceso y reconciliación) → dry run completo, sin escribir nada.
+6. **Actualizar Pairings WB** (menú principal) → escribe RESUMEN/Vuelos/Cronograma/_PAIRINGS_DATA,
+   corre QA post-escritura, y archiva el histórico automáticamente si `AUTO_ARCHIVE_ON_SUCCESS=TRUE`.
+7. **Ver último run** / **Ejecutar QA** (Auditoría y QA) para auditoría en cualquier momento.
 
 ## Gate crítico: script standalone
 

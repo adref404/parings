@@ -15,6 +15,261 @@ function wbDiagnosticoHeadless() {
   return Orchestrator.runDiagnostics();
 }
 
+// ---------------------------------------------------------------------------------------------
+// Experiencia de USUARIO FINAL (menu de nivel superior "Pairings WB"): lenguaje operacional, sin
+// mencionar BigQuery/snapshot/load_key/ingestion_datetime/job project/schema/hash/_CONFIG/_RUNS/
+// QA. Cualquier incidencia administrativa se muestra como humanFriendlyBlockedMessage_(), nunca
+// como traceback tecnico. Toda la logica real sigue viviendo en Orchestrator; estas funciones solo
+// formatean entrada/salida.
+// ---------------------------------------------------------------------------------------------
+
+var MONTH_NAMES_ES_ = [
+  'enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio',
+  'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre',
+];
+
+function capitalize_(s) {
+  return s ? s.charAt(0).toUpperCase() + s.slice(1) : s;
+}
+
+/** "2026"/"9" -> "Septiembre 2026". Si el mes no calza, degrada a "mes 9 2026" en vez de fallar. */
+function humanPeriodLabel_(year, month) {
+  var idx = parseInt(month, 10) - 1;
+  var name = MONTH_NAMES_ES_[idx];
+  return (name ? capitalize_(name) : ('mes ' + month)) + ' ' + year;
+}
+
+/** Mensaje de bloqueo para el usuario final: nunca expone load_key/BigQuery/hash/traceback. */
+function humanFriendlyBlockedMessage_(periodLabel) {
+  return 'No se puede actualizar ' + (periodLabel || 'este mes') + ' todavía.\n\n' +
+    'La preparación técnica del mes requiere revisión de un administrador.\n' +
+    'Use Pairings WB > Administración.';
+}
+
+/**
+ * Resumen humano de un resultado de Orchestrator.runPipeline (preview o publicacion), en el
+ * formato pedido por la mision: cuenta como "conservadas" tanto ACTIVE (mismo snapshot) como
+ * RELINKED_IDENTICAL (snapshot nuevo, contenido identico) — ambas preservan assignment_id/INS/ACT
+ * sin necesitar revision humana — y como "requieren revisión" tanto REVIEW_SOURCE_CHANGED como
+ * ORPHANED_SOURCE_MISSING, los dos estados que si la necesitan.
+ */
+function buildHumanUpdateSummary_(r, periodLabel) {
+  var conserved = (r.assignmentsPreserved || 0) + (r.assignmentsRelinked || 0);
+  var needsReview = (r.contentChangesDetected || 0) + (r.assignmentsOrphaned || 0);
+  return [
+    periodLabel,
+    '',
+    r.pairingsEligible + ' pairings disponibles',
+    conserved + ' asignaciones actuales se conservarán',
+    r.assignmentsCreated + ' pairings nuevos',
+    needsReview + ' requieren revisión',
+    '',
+    'No se eliminará ninguna asignación de instructor.',
+  ].join('\n');
+}
+
+/** true si el resultado de runPipeline esta en condiciones de publicarse sin problemas. */
+function isCleanForPublish_(r) {
+  return !!r.qaPassed && !(r.publishGate && r.publishGate.blocked);
+}
+
+/**
+ * "Actualizar Pairings WB": el flujo normal para el usuario final (mision <end_user_experience>).
+ * Comprueba silenciosamente configuración/snapshot/baseline (via el preview + gates existentes),
+ * ejecuta una previsualización, muestra un resumen humano, pide confirmación, y publica SOLO si
+ * todos los gates pasan. Ninguna incidencia tecnica se muestra cruda al usuario final.
+ */
+function wbMenuActualizarPairingsWB() {
+  var ui = SpreadsheetApp.getUi();
+
+  var ctx;
+  try {
+    ctx = Orchestrator.loadContext();
+  } catch (e) {
+    ui.alert('Pairings WB', humanFriendlyBlockedMessage_(), ui.ButtonSet.OK);
+    return;
+  }
+  var periodLabel = humanPeriodLabel_(ctx.config.REFERENCE_YEAR, ctx.config.REFERENCE_MONTH);
+
+  var preview;
+  try {
+    preview = Orchestrator.runPipeline(true);
+  } catch (e) {
+    ui.alert('Pairings WB', humanFriendlyBlockedMessage_(periodLabel), ui.ButtonSet.OK);
+    return;
+  }
+  if (!isCleanForPublish_(preview)) {
+    ui.alert('Pairings WB', humanFriendlyBlockedMessage_(periodLabel), ui.ButtonSet.OK);
+    return;
+  }
+
+  var confirmMsg = buildHumanUpdateSummary_(preview, periodLabel) + '\n\n¿Desea actualizar Pairings WB?';
+  var confirm = ui.alert('Pairings WB', confirmMsg, ui.ButtonSet.YES_NO);
+  if (confirm !== ui.Button.YES) return;
+
+  var result;
+  try {
+    result = Orchestrator.runPipeline(false);
+  } catch (e) {
+    ui.alert('Pairings WB', humanFriendlyBlockedMessage_(periodLabel), ui.ButtonSet.OK);
+    return;
+  }
+  if (result.status !== 'PUBLISHED' && result.status !== 'PUBLISHED_WITH_QA_WARNINGS') {
+    ui.alert('Pairings WB', humanFriendlyBlockedMessage_(periodLabel), ui.ButtonSet.OK);
+    return;
+  }
+  ui.alert('Pairings WB', 'Pairings WB de ' + periodLabel + ' actualizado correctamente.\n\n' + buildHumanUpdateSummary_(result, periodLabel), ui.ButtonSet.OK);
+}
+
+/**
+ * "Previsualizar cambios": mismo pipeline dry-run que "Actualizar Pairings WB" pero con resumen
+ * humano y SIN pedir confirmacion ni publicar nunca (mision <end_user_experience> #2).
+ */
+function wbMenuPrevisualizarCambios() {
+  var ui = SpreadsheetApp.getUi();
+
+  var ctx;
+  try {
+    ctx = Orchestrator.loadContext();
+  } catch (e) {
+    ui.alert('Pairings WB', humanFriendlyBlockedMessage_(), ui.ButtonSet.OK);
+    return;
+  }
+  var periodLabel = humanPeriodLabel_(ctx.config.REFERENCE_YEAR, ctx.config.REFERENCE_MONTH);
+
+  var preview;
+  try {
+    preview = Orchestrator.runPipeline(true);
+  } catch (e) {
+    ui.alert('Pairings WB', humanFriendlyBlockedMessage_(periodLabel), ui.ButtonSet.OK);
+    return;
+  }
+
+  var msg = buildHumanUpdateSummary_(preview, periodLabel);
+  if (!isCleanForPublish_(preview)) {
+    msg += '\n\nNota: la publicación real todavía requiere revisión de un administrador (Pairings WB > Administración).';
+  }
+  msg += '\n\nEsto es solo una previsualización: no se escribió ningún cambio.';
+  ui.alert('Previsualizar cambios', msg, ui.ButtonSet.OK);
+}
+
+/**
+ * "Ver estado del mes" (mision <end_user_experience> #3): barato, NUNCA ejecuta BigQuery. Solo lee
+ * _CONFIG/RESUMEN/_RUNS (ya presentes en el Spreadsheet) para responder si el mes esta listo.
+ */
+function wbMenuVerEstadoDelMes() {
+  var ui = SpreadsheetApp.getUi();
+  try {
+    var ctx = Orchestrator.loadContext();
+    var periodLabel = humanPeriodLabel_(ctx.config.REFERENCE_YEAR, ctx.config.REFERENCE_MONTH);
+    var baseline = SheetStructure.readResumenRows(ctx.ss).rows.filter(function (r) { return r.assignment_id; });
+
+    var configValidation = validateConfig(ctx.config, ctx.routes);
+    var certified = ctx.config.SNAPSHOT_CERTIFICATION === SNAPSHOT_CERTIFICATION.CERTIFIED;
+    var gate = evaluatePublishGate(baseline);
+    var ready = configValidation.valid && certified && !gate.blocked;
+
+    var lastRun = AuditService.readLastRun(ctx.ss);
+    var lastSuccess = (lastRun && (lastRun.status === 'PUBLISHED' || lastRun.status === 'PUBLISHED_WITH_QA_WARNINGS'))
+      ? lastRun.finished_at : null;
+
+    var pendingReview = baseline.filter(function (r) { return r.assignment_status === ASSIGNMENT_STATUS.REVIEW_SOURCE_CHANGED; }).length;
+
+    var lines = [
+      periodLabel,
+      '',
+      'Preparación del mes: ' + (ready ? 'Lista' : 'Requiere administración'),
+      'Última actualización exitosa: ' + (lastSuccess || 'Aún no hay actualizaciones publicadas'),
+      'Cantidad actual de asignaciones: ' + baseline.length,
+      'Revisión pendiente: ' + (pendingReview > 0 ? ('Sí (' + pendingReview + ')') : 'No'),
+    ];
+    ui.alert('Ver estado del mes', lines.join('\n'), ui.ButtonSet.OK);
+  } catch (e) {
+    ui.alert('Ver estado del mes', 'No se pudo obtener el estado del mes en este momento.\nUse Pairings WB > Administración > Diagnóstico del sistema.', ui.ButtonSet.OK);
+  }
+}
+
+/**
+ * "Ir a RESUMEN" (mision <end_user_experience> #4): valida SIEMPRE EXPECTED_SPREADSHEET_ID antes
+ * de actuar, para nunca activar una hoja en el Spreadsheet equivocado.
+ */
+function wbMenuIrAResumen() {
+  var ui = SpreadsheetApp.getUi();
+  try {
+    var active = SpreadsheetApp.getActiveSpreadsheet();
+    if (!active || active.getId() !== WB_KNOWN.EXPECTED_SPREADSHEET_ID) {
+      ui.alert('Pairings WB', 'No se pudo ir a RESUMEN: este menú debe ejecutarse desde el Spreadsheet "Pairings WB" correcto.', ui.ButtonSet.OK);
+      return;
+    }
+    var sheet = active.getSheetByName(SHEET_NAMES.RESUMEN);
+    if (!sheet) {
+      ui.alert('Pairings WB', 'La hoja RESUMEN no existe todavía. Use "Actualizar Pairings WB" primero.', ui.ButtonSet.OK);
+      return;
+    }
+    sheet.activate();
+  } catch (e) {
+    ui.alert('Ir a RESUMEN — Error', String(e.message || e), ui.ButtonSet.OK);
+  }
+}
+
+/**
+ * "Guía de uso y administración" (mision <admin_help>): sidebar HtmlService, sin framework ni
+ * asset externo. El contenido puro vive en buildGuiaHtmlContent_ (90_Menu.js) para poder testearse
+ * en Node; aqui solo se envuelve en HtmlOutput y se muestra.
+ */
+function wbMenuGuiaDeUso() {
+  var ui = SpreadsheetApp.getUi();
+  try {
+    var html = HtmlService.createHtmlOutput(buildGuiaHtmlContent_())
+      .setTitle('Pairings WB — Guía')
+      .setWidth(360);
+    ui.showSidebar(html);
+  } catch (e) {
+    ui.alert('Guía de uso y administración — Error', String(e.message || e), ui.ButtonSet.OK);
+  }
+}
+
+/**
+ * Administración > Fuente de datos > "Comparar snapshot con RESUMEN actual" (mision
+ * <new_diagnostic>): diagnostico tecnico DRY-RUN, salida detallada para uso administrativo (a
+ * diferencia de las opciones de usuario final, aqui SI se muestran IDs/hash porque la audiencia es
+ * un administrador resolviendo el gate de baseline legacy).
+ */
+function wbMenuCompararSnapshotConResumen() {
+  var ui = SpreadsheetApp.getUi();
+  try {
+    var report = Orchestrator.compareBaselineWithSnapshot();
+    var s = report.summary;
+    var lines = [
+      'Snapshot: ' + report.snapshotKey,
+      'BigQuery job: ' + report.bqJobId + ' (' + report.bqBytesProcessed + ' bytes)',
+      '',
+      'Asignaciones baseline: ' + s.assignmentsBaseline,
+      'Pairing IDs únicos baseline: ' + s.pairingIdsUniqueBaseline,
+      'Con vinculación técnica ausente (legacy-unlinked): ' + s.legacyTechnicalLinkageMissing,
+      '',
+      'Presentes en snapshot actual: ' + s.pairingIdsPresent,
+      'Ausentes del snapshot actual: ' + s.pairingIdsAbsent,
+      '',
+      'Coincidencia visible exacta (Fecha/Vuelo/Ruta/Inicio/Fin): ' + s.visibleExact,
+      'Coincidencia visible parcial: ' + s.visiblePartial,
+      'Contenido visible distinto: ' + s.visibleDistinct,
+      '',
+      'Hash actual igual al legacy: ' + s.hashSame,
+      'Hash actual distinto al legacy: ' + s.hashDifferent,
+    ];
+    if (report.absentPairingIds.length) lines.push('', 'Ausentes: ' + report.absentPairingIds.join(', '));
+    if (report.visibleExactHashDifferentPairingIds.length) {
+      lines.push('', 'Visible IGUAL pero hash distinto (indicio de incompatibilidad de contrato de hash legacy): ' + report.visibleExactHashDifferentPairingIds.join(', '));
+    }
+    if (report.visibleDistinctPairingIds.length) lines.push('', 'Visible DISTINTO (cambio real de contenido): ' + report.visibleDistinctPairingIds.join(', '));
+    lines.push('', 'Esto fue un DRY RUN de solo lectura: no se modificó snapshot, RESUMEN, hashes ni assignment_id.');
+    ui.alert('Comparar snapshot con RESUMEN actual', lines.join('\n'), ui.ButtonSet.OK);
+  } catch (e) {
+    ui.alert('Comparar snapshot con RESUMEN actual — Error', String(e.message || e), ui.ButtonSet.OK);
+  }
+}
+
 function wbMenuDiagnostico() {
   var ui = SpreadsheetApp.getUi();
   try {
@@ -128,7 +383,7 @@ function wbMenuCertificarSnapshot() {
       load_key_id: chosen.load_key_id, load_type_code: chosen.load_type_code,
       load_version_id: chosen.load_version_id, ingestion_datetime: chosen.ingestion_datetime,
     });
-    ui.alert('Snapshot certificado: ' + chosen.load_key_id + ' (' + chosen.ingestion_datetime + '). Ya puede usar "Previsualizar cálculo" o "Calcular y publicar mes".');
+    ui.alert('Snapshot certificado: ' + chosen.load_key_id + ' (' + chosen.ingestion_datetime + '). Ya puede usar "Previsualizar cambios" o "Actualizar Pairings WB".');
   } catch (e) {
     ui.alert('Certificar snapshot — Error', String(e.message || e), ui.ButtonSet.OK);
   }
@@ -227,33 +482,11 @@ function wbMenuReconciliarCambios() {
       'Huérfanas (ORPHANED_SOURCE_MISSING): ' + r.assignmentsOrphaned,
       'Nuevas (NEW): ' + r.assignmentsCreated,
       '',
-      'Esto fue solo un análisis (dry run): no se modificó ninguna asignación. Use "Calcular y publicar mes" para aplicar.',
+      'Esto fue solo un análisis (dry run): no se modificó ninguna asignación. Use "Actualizar Pairings WB" para aplicar.',
     ];
     ui.alert('Reconciliar cambios de fuente', lines.join('\n'), ui.ButtonSet.OK);
   } catch (e) {
     ui.alert('Reconciliar cambios de fuente — Error', String(e.message || e), ui.ButtonSet.OK);
-  }
-}
-
-function wbMenuCalcularYPublicar() {
-  var ui = SpreadsheetApp.getUi();
-  try {
-    var preview = Orchestrator.runPipeline(true);
-    if (!preview.qaPassed) {
-      ui.alert('Calcular y publicar mes — Bloqueado', 'La previsualización detectó fallas de QA:\n' + formatQaList_(preview.qa), ui.ButtonSet.OK);
-      return;
-    }
-    var confirmMsg = formatRunSummary_(preview) + '\n\n¿Confirma publicar estos cambios en RESUMEN/Vuelos/Cronograma/_PAIRINGS_DATA?';
-    var confirm = ui.alert('Calcular y publicar mes', confirmMsg, ui.ButtonSet.YES_NO);
-    if (confirm !== ui.Button.YES) return;
-
-    var r = Orchestrator.runPipeline(false);
-    var historyMsg = r.historyInfo
-      ? ('\nHistórico: ' + (r.historyInfo.created ? 'creado' : 'ya existía') + ' (fileId=' + r.historyInfo.fileId + ')')
-      : '\nHistórico: no generado (revisar AUTO_ARCHIVE_ON_SUCCESS o QA post-escritura).';
-    ui.alert('Calcular y publicar mes — ' + r.status, formatRunSummary_(r) + historyMsg, ui.ButtonSet.OK);
-  } catch (e) {
-    ui.alert('Calcular y publicar mes — Error', String(e.message || e), ui.ButtonSet.OK);
   }
 }
 
@@ -263,7 +496,7 @@ function wbMenuCrearVerificarHistorico() {
     var ctx = Orchestrator.loadContext();
     var lastRun = AuditService.readLastRun(ctx.ss);
     if (!lastRun || (lastRun.status !== 'PUBLISHED' && lastRun.status !== 'PUBLISHED_WITH_QA_WARNINGS')) {
-      ui.alert('No hay un run PUBLISHED reciente. Ejecute "Calcular y publicar mes" primero.');
+      ui.alert('No hay un run PUBLISHED reciente. Ejecute "Actualizar Pairings WB" primero.');
       return;
     }
     var historyKey = computeHistoryKey({
@@ -311,14 +544,21 @@ function formatQaList_(qaList) {
 }
 
 function formatRunSummary_(r) {
-  return [
+  var lines = [
     'Snapshot: ' + r.snapshotKey,
     'Legs recibidos: ' + r.legsReceived + ' | Pairings: ' + r.pairingsReceived + ' (elegibles=' + r.pairingsEligible + ', revisión=' + r.pairingsReview + ')',
     'Asignaciones — preservadas: ' + r.assignmentsPreserved + ', relinkeadas: ' + r.assignmentsRelinked +
       ', cambios de contenido: ' + r.contentChangesDetected + ', huérfanas: ' + r.assignmentsOrphaned + ', nuevas: ' + r.assignmentsCreated,
     'BigQuery job: ' + r.bqJobId + ' (' + r.bqBytesProcessed + ' bytes)',
     'QA: ' + (r.qaPassed ? 'PASS' : 'FAIL — ' + formatQaList_(r.qa.filter(function (c) { return !c.passed; }))),
-  ].join('\n');
+  ];
+  if (r.publishGate && r.publishGate.blocked) {
+    lines.push('Gate de publicación: BLOQUEADO — ' + r.publishGate.reason);
+    lines.push('Recomendación: use "Comparar snapshot con RESUMEN actual" (Administración > Fuente de datos).');
+  } else {
+    lines.push('Gate de publicación: OK');
+  }
+  return lines.join('\n');
 }
 
 if (typeof module !== 'undefined' && module.exports) {
