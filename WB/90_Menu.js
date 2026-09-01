@@ -51,7 +51,8 @@ function buildPairingsWbMenu_(ui) {
   menu.addSubMenu(ui.createMenu('BigQuery')
     .addItem('Detectar snapshots del mes', 'wbMenuDetectarSnapshots')
     .addItem('Certificar snapshot', 'wbMenuCertificarSnapshot')
-    .addItem('Probar consulta / dry run', 'wbMenuProbarConsulta'));
+    .addItem('Probar consulta / dry run', 'wbMenuProbarConsulta')
+    .addItem('Probar/configurar proyecto de ejecución', 'wbMenuProbarConfigurarProyectoEjecucion'));
 
   menu.addSubMenu(ui.createMenu('Proceso mensual')
     .addItem('Previsualizar cálculo', 'wbMenuPrevisualizarCalculo')

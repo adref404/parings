@@ -57,14 +57,39 @@ var Orchestrator = {
       report.sheetHeaders[pair[0]] = SheetStructure.diffHeaders(ctx.ss, pair[0], pair[1]);
     });
 
+    // BigQuery separa DATA project (donde vive la tabla, fijo: operations-data-prod) de JOB
+    // project (donde se crea/ejecuta/factura el query job, Seccion 5 del prompt maestro). Se
+    // prueban por separado para poder diferenciar un fallo de permiso de creacion de job (IAM
+    // en el job project) de un fallo de lectura de la fuente Carmen Gold (IAM en el data project),
+    // en vez de colapsar ambos en un unico booleano "BigQuery alcanzable".
+    report.dataProject = ctx.config.PROJECT_ID;
+    report.jobProject = ctx.config.BIGQUERY_JOB_PROJECT_ID;
     try {
-      var dry = BigQueryGateway.dryRun(buildDiscoverySql(ctx.config), ctx.config.BIGQUERY_JOB_PROJECT_ID);
-      report.bigQueryReachable = true;
-      report.bigQueryEstimatedBytes = dry.totalBytesProcessed;
+      BigQueryGateway.dryRun(JOB_CREATION_PROBE_SQL, ctx.config.BIGQUERY_JOB_PROJECT_ID);
+      report.jobCreationOk = true;
+      report.jobCreationError = null;
     } catch (e) {
-      report.bigQueryReachable = false;
-      report.bigQueryError = e.message;
+      report.jobCreationOk = false;
+      report.jobCreationError = e.message;
     }
+
+    if (report.jobCreationOk) {
+      try {
+        var dry = BigQueryGateway.dryRun(buildDiscoverySql(ctx.config), ctx.config.BIGQUERY_JOB_PROJECT_ID);
+        report.sourceAccessOk = true;
+        report.sourceAccessError = null;
+        report.bigQueryEstimatedBytes = dry.totalBytesProcessed;
+      } catch (e) {
+        report.sourceAccessOk = false;
+        report.sourceAccessError = e.message;
+      }
+    } else {
+      report.sourceAccessOk = false;
+      report.sourceAccessError = 'No probado: fallo la creacion de job en el job project configurado.';
+    }
+    // Retrocompatibilidad: "alcanzable" = ambas pruebas pasaron.
+    report.bigQueryReachable = report.jobCreationOk && report.sourceAccessOk;
+    report.bigQueryError = report.jobCreationError || report.sourceAccessError || null;
 
     report.lastRun = AuditService.readLastRun(ctx.ss);
 
@@ -79,7 +104,10 @@ var Orchestrator = {
 
     var sql = buildDiscoverySql(ctx.config);
     var result = BigQueryGateway.runQuery(sql, ctx.config.BIGQUERY_JOB_PROJECT_ID, { maximumBytesBilled: ctx.config.MAXIMUM_BYTES_BILLED });
-    var candidates = parseRowsWithSchema(result.schema.fields, result.rows);
+    // BQ_DISCOVERY_FIELDS (10 columnas agregadas), NUNCA el default BQ_REQUIRED_FIELDS (84
+    // columnas leg-level): buildDiscoverySql() es un GROUP BY, no un result set leg-level. Pasar
+    // el default aqui producia SCHEMA_ERROR apenas el permiso de IAM se desbloqueara (bug latente).
+    var candidates = parseRowsWithSchema(result.schema.fields, result.rows, BQ_DISCOVERY_FIELDS);
     var selection = selectSnapshotCandidate(candidates);
 
     return { candidates: candidates, selection: selection, jobId: result.jobId, bytesProcessed: result.totalBytesProcessed };
@@ -90,6 +118,57 @@ var Orchestrator = {
     var ctx = Orchestrator.loadContext();
     ConfigService.writeSnapshotCertification(ctx.ss, loadIdentity);
     return { certified: true, loadIdentity: loadIdentity };
+  },
+
+  /**
+   * Prueba NO DESTRUCTIVA (solo dry run: nunca ejecuta ni factura un job real) de un proyecto de
+   * ejecucion BigQuery candidato (Seccion 5 del prompt maestro). Dos pruebas independientes:
+   *   1. jobCreation: permiso bigquery.jobs.create en el candidato (SQL trivial, sin tocar la fuente).
+   *   2. sourceAccess: dry run del SQL de descubrimiento REAL contra la fuente Carmen Gold fija,
+   *      pero ejecutado bajo el candidato. Solo se intenta si (1) paso.
+   * Nunca escribe _CONFIG. Nunca toca PROJECT_ID/DATASET_ID/TABLE_ID (fqTable() los usa tal cual
+   * estan en ctx.config, sin importar el candidato de job project).
+   */
+  testJobProject: function (candidateJobProjectId) {
+    var ctx = Orchestrator.loadContext();
+    var report = {
+      dataProject: ctx.config.PROJECT_ID,
+      currentJobProject: ctx.config.BIGQUERY_JOB_PROJECT_ID,
+      candidateJobProject: candidateJobProjectId,
+    };
+
+    try {
+      BigQueryGateway.dryRun(JOB_CREATION_PROBE_SQL, candidateJobProjectId);
+      report.jobCreation = { ok: true, error: null };
+    } catch (e) {
+      report.jobCreation = { ok: false, error: e.message };
+      report.sourceAccess = { ok: false, error: 'No probado: fallo la creacion de job.', bytesProcessed: null };
+      report.decision = decideJobProjectUpdate(candidateJobProjectId, report);
+      return report;
+    }
+
+    try {
+      var sourceDry = BigQueryGateway.dryRun(buildDiscoverySql(ctx.config), candidateJobProjectId);
+      report.sourceAccess = { ok: true, error: null, bytesProcessed: sourceDry.totalBytesProcessed };
+    } catch (e) {
+      report.sourceAccess = { ok: false, error: e.message, bytesProcessed: null };
+    }
+
+    report.decision = decideJobProjectUpdate(candidateJobProjectId, report);
+    return report;
+  },
+
+  /**
+   * Aplica el plan de actualizacion de BIGQUERY_JOB_PROJECT_ID. El llamador (99_EntryPoints.js) es
+   * responsable de solo invocar esto tras testJobProject() con decision.shouldWrite=true Y
+   * confirmacion explicita del usuario (Seccion 5.5-5.6 del prompt maestro). Nunca certifica
+   * snapshot, nunca toca ninguna otra clave de _CONFIG.
+   */
+  applyJobProject: function (candidateJobProjectId) {
+    var ctx = Orchestrator.loadContext();
+    var plan = buildJobProjectUpdatePlan(candidateJobProjectId);
+    ConfigService.writeValues(ctx.ss, plan);
+    return { applied: true, plan: plan };
   },
 
   /** Ejecuta el pipeline completo. dryRun=true nunca escribe hojas operacionales. */

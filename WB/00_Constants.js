@@ -13,6 +13,14 @@ var WB_KNOWN = Object.freeze({
   BIGQUERY_PROJECT_ID: 'operations-data-prod',
   BIGQUERY_DATASET_ID: 'carmen_gold',
   BIGQUERY_TABLE_ID: 'crew_pairing_carmen_system',
+  // Proyecto de EJECUCION (jobs.create/billing) candidato, DISTINTO del DATA project de arriba.
+  // Verificado en vivo (dry run real, no teorico) el 2026-09-01 con la identidad que autoriza el
+  // script: bigquery.jobs.create = PASS en este proyecto, y un dry run del SQL de descubrimiento
+  // real contra `operations-data-prod.carmen_gold.crew_pairing_carmen_system` bajo este job
+  // project tambien = PASS (~112MB estimados, dentro de MAXIMUM_BYTES_BILLED). Ver docs/DECISIONS.md.
+  // Es solo la propuesta inicial del menu "Probar/configurar proyecto de ejecucion": nunca se
+  // aplica a _CONFIG sin volver a probarse y confirmarse explicitamente (Seccion 5 del prompt maestro).
+  CANDIDATE_BIGQUERY_JOB_PROJECT_ID: 'datadem-home',
 });
 
 /** Nombres de hoja visibles y tecnicas. */
@@ -104,7 +112,12 @@ var CONFIG_DEFAULTS = Object.freeze({
   PROJECT_ID: WB_KNOWN.BIGQUERY_PROJECT_ID,
   DATASET_ID: WB_KNOWN.BIGQUERY_DATASET_ID,
   TABLE_ID: WB_KNOWN.BIGQUERY_TABLE_ID,
-  BIGQUERY_JOB_PROJECT_ID: WB_KNOWN.BIGQUERY_PROJECT_ID,
+  // Default SOLO para instalaciones nuevas (ensureDefaults nunca sobrescribe una _CONFIG ya
+  // existente, ver 15_Config.js computeConfigBootstrapPlan). Antes era WB_KNOWN.BIGQUERY_PROJECT_ID
+  // (operations-data-prod), pero ese proyecto es el DATA project: la identidad que autoriza el
+  // script no tiene bigquery.jobs.create ahi (confirmado en vivo, docs/DECISIONS.md). El candidato
+  // ya verificado como JOB project (jobs.create + lectura de Carmen Gold, ambos PASS) es este.
+  BIGQUERY_JOB_PROJECT_ID: WB_KNOWN.CANDIDATE_BIGQUERY_JOB_PROJECT_ID,
   BIGQUERY_LOCATION: 'US',
   MAXIMUM_BYTES_BILLED: '300000000',
   SUBSIDIARY_CODE: 'LP',
@@ -152,6 +165,18 @@ var BQ_REQUIRED_FIELDS = Object.freeze([
   'crew_range_type_code', 'reference_month_number', 'reference_year',
   'ingestion_datetime', 'load_version_id',
   'service_type_code', 'flight_type_code',
+]);
+
+/**
+ * Columnas EXACTAS que devuelve buildDiscoverySql() (Seccion 12, Flujo A: descubrimiento de
+ * snapshots candidatos). Es un result set agregado (GROUP BY por identidad de carga), NO un
+ * result set leg-level: nunca debe validarse contra BQ_REQUIRED_FIELDS (eso produciria un
+ * SCHEMA_ERROR falso apenas IAM lo desbloquee). Ver 25_BigQueryGateway.js parseRowsWithSchema.
+ */
+var BQ_DISCOVERY_FIELDS = Object.freeze([
+  'load_key_id', 'load_type_code', 'load_version_id', 'ingestion_datetime',
+  'fleet_type_code', 'subfleet_code',
+  'leg_count', 'pairing_count', 'min_pairing_start_date', 'max_pairing_start_date',
 ]);
 
 /**
@@ -204,6 +229,7 @@ if (typeof module !== 'undefined' && module.exports) {
     ASSIGNMENT_STATUS: ASSIGNMENT_STATUS, ELIGIBILITY_STATUS: ELIGIBILITY_STATUS,
     SNAPSHOT_CERTIFICATION: SNAPSHOT_CERTIFICATION, CONFIG_DEFAULTS: CONFIG_DEFAULTS,
     CONFIG_DEFAULT_ROUTES: CONFIG_DEFAULT_ROUTES, BQ_REQUIRED_FIELDS: BQ_REQUIRED_FIELDS,
+    BQ_DISCOVERY_FIELDS: BQ_DISCOVERY_FIELDS,
     PAIRINGS_DATA_HEADERS: PAIRINGS_DATA_HEADERS, RUNS_HEADERS: RUNS_HEADERS,
   };
 }

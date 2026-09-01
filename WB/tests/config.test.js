@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const {
   canonicalizeConfig, normalizeRoutes, parseAllowedDow, computeConfigHash,
   validateConfig, isSnapshotCertified, computeConfigBootstrapPlan,
+  buildJobProjectUpdatePlan, decideJobProjectUpdate,
 } = require('../15_Config.js');
 const { CONFIG_DEFAULTS, CONFIG_DEFAULT_ROUTES, SNAPSHOT_CERTIFICATION } = require('../00_Constants.js');
 
@@ -134,4 +135,29 @@ test('computeConfigBootstrapPlan - rutas vacias SI requieren escritura (bootstra
   const plan = computeConfigBootstrapPlan(current);
   assert.equal(plan.needsWrite, true);
   assert.equal(plan.routes, CONFIG_DEFAULT_ROUTES);
+});
+
+// ---------------------------------------------------------------------------
+// T156-T157 (Mision: BigQuery -> Probar/configurar proyecto de ejecucion)
+// ---------------------------------------------------------------------------
+
+test('T156 - un fallo del job project (creacion de job o acceso a la fuente) NO produce un plan de escritura', () => {
+  const jobCreationFailed = { jobCreation: { ok: false, error: '403 jobs.create denied' }, sourceAccess: { ok: false, error: 'No probado' } };
+  const d1 = decideJobProjectUpdate('datadem-home', jobCreationFailed);
+  assert.equal(d1.shouldWrite, false);
+  assert.equal(d1.plan, null);
+
+  const sourceAccessFailed = { jobCreation: { ok: true, error: null }, sourceAccess: { ok: false, error: '403 dataViewer denied' } };
+  const d2 = decideJobProjectUpdate('datadem-home', sourceAccessFailed);
+  assert.equal(d2.shouldWrite, false);
+  assert.equal(d2.plan, null, 'creacion de job OK no alcanza: tambien debe pasar el acceso a la fuente');
+});
+
+test('T157 - un job project validado (ambas pruebas PASS) genera un plan de escritura UNICAMENTE de BIGQUERY_JOB_PROJECT_ID', () => {
+  const bothPassed = { jobCreation: { ok: true, error: null }, sourceAccess: { ok: true, error: null, bytesProcessed: 111890909 } };
+  const decision = decideJobProjectUpdate('datadem-home', bothPassed);
+  assert.equal(decision.shouldWrite, true);
+  assert.deepEqual(Object.keys(decision.plan), ['BIGQUERY_JOB_PROJECT_ID']);
+  assert.equal(decision.plan.BIGQUERY_JOB_PROJECT_ID, 'datadem-home');
+  assert.deepEqual(buildJobProjectUpdatePlan('datadem-home'), { BIGQUERY_JOB_PROJECT_ID: 'datadem-home' });
 });

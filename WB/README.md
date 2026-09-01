@@ -89,7 +89,13 @@ eso, el menú aparece solo cada vez que se abre el Spreadsheet. Ver `docs/DECISI
 - **BigQuery**: la identidad que autorice el script necesita `roles/bigquery.dataViewer` (o
   equivalente) sobre `operations-data-prod.carmen_gold` y `roles/bigquery.jobUser` sobre el
   proyecto configurado en `_CONFIG.BIGQUERY_JOB_PROJECT_ID`. Si falta el segundo rol, `Jobs.query`
-  devuelve `403 PERMISSION_DENIED: User does not have bigquery.jobs.create permission`.
+  devuelve `403 PERMISSION_DENIED: User does not have bigquery.jobs.create permission`. El DATA
+  project (`operations-data-prod`, donde vive la tabla) y el JOB project (donde se crea/factura el
+  query job) son cosas distintas en BigQuery: `operations-data-prod` NO tiene por qué tener (ni
+  tiene, confirmado) `bigquery.jobs.create` para esta identidad. Usar el menú **BigQuery → Probar/
+  configurar proyecto de ejecución** para probar (sin efectos secundarios) y, solo si ambas pruebas
+  pasan y se confirma explícitamente, alinear `BIGQUERY_JOB_PROJECT_ID` a un proyecto que sí tenga
+  ese permiso — ver D19/D20 en `docs/DECISIONS.md`.
 - **Sheets/Drive**: el script pide los scopes de `SpreadsheetApp`/`DriveApp` automáticamente al
   autorizarse (no hay `oauthScopes` explícitos en `appsscript.json`: se detectan por los servicios
   usados).

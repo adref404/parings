@@ -45,6 +45,14 @@ function computeGuardBandRange(referenceYear, referenceMonth) {
   };
 }
 
+/**
+ * SQL trivial usada UNICAMENTE para probar el permiso bigquery.jobs.create en un proyecto de
+ * ejecucion candidato (Seccion 5 del prompt maestro), sin tocar ninguna fuente de datos real. No
+ * referencia `operations-data-prod.carmen_gold.crew_pairing_carmen_system` a proposito: aisla la
+ * prueba de creacion de job de la prueba de acceso a la fuente (dos permisos IAM distintos).
+ */
+var JOB_CREATION_PROBE_SQL = 'SELECT 1';
+
 var FQ_TABLE_TEMPLATE = '`{project}.{dataset}.{table}`';
 
 function fqTable(config) {
@@ -154,9 +162,15 @@ function validateSchema(schemaFields, requiredFields) {
 /**
  * Convierte las filas crudas de BigQuery (formato REST: row.f[i].v) en objetos {campo: valor}
  * usando el mapa de indices por nombre. Lanza si el esquema no es valido (llamar validateSchema antes).
+ *
+ * `requiredFields` es OPCIONAL y se reenvia tal cual a validateSchema (que ya sabe caer a
+ * BQ_REQUIRED_FIELDS si no se pasa nada). Es imprescindible pasarlo explicitamente para result sets
+ * que NO son leg-level, como el descubrimiento de snapshots (BQ_DISCOVERY_FIELDS): sin este
+ * parametro, cualquier llamada terminaba validando ~10 columnas agregadas contra el contrato
+ * leg-level completo (84 columnas) y fallaba con SCHEMA_ERROR aunque la respuesta fuera correcta.
  */
-function parseRowsWithSchema(schemaFields, rows) {
-  var validation = validateSchema(schemaFields);
+function parseRowsWithSchema(schemaFields, rows, requiredFields) {
+  var validation = validateSchema(schemaFields, requiredFields);
   if (!validation.ok) {
     throw new Error('SCHEMA_ERROR: faltan columnas requeridas: ' + validation.missing.join(', '));
   }
@@ -234,6 +248,7 @@ if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     GUARD_BAND_DAYS: GUARD_BAND_DAYS, sqlQuote: sqlQuote, sqlQuoteList: sqlQuoteList,
     computeGuardBandRange: computeGuardBandRange, fqTable: fqTable,
+    JOB_CREATION_PROBE_SQL: JOB_CREATION_PROBE_SQL,
     buildDiscoverySql: buildDiscoverySql, buildCertifiedLegSql: buildCertifiedLegSql,
     sqlHasSelectStar: sqlHasSelectStar, sqlHasPartitionFilter: sqlHasPartitionFilter,
     sqlIsReadOnly: sqlIsReadOnly, buildFieldIndex: buildFieldIndex, validateSchema: validateSchema,

@@ -21,6 +21,13 @@ test('Q3 - bloquea incluso en preview si nunca se certifico nada (LOAD_KEY_ID si
   assert.match(QaService.q3SnapshotCertified(CONFIG_DEFAULTS, true).detail, /ningun snapshot fue certificado/);
 });
 
+test('T159 - Q3 sigue bloqueando PENDING_CERTIFICATION aunque BIGQUERY_JOB_PROJECT_ID cambie (resolver IAM no certifica nada)', () => {
+  const conJobProjectNuevoPeroSinCertificar = Object.assign({}, CONFIG_DEFAULTS, { BIGQUERY_JOB_PROJECT_ID: 'datadem-home' });
+  assert.equal(conJobProjectNuevoPeroSinCertificar.LOAD_KEY_ID, 'PENDING_CERTIFICATION');
+  assert.equal(QaService.q3SnapshotCertified(conJobProjectNuevoPeroSinCertificar, false).passed, false);
+  assert.equal(QaService.q3SnapshotCertified(conJobProjectNuevoPeroSinCertificar, true).passed, false, 'ni siquiera en preview: arreglar IAM no es certificar un snapshot');
+});
+
 test('Q8 - detecta cualquier cambio de INS/ACT durante un dry run (debe ser 0)', () => {
   const before = [{ assignment_id: 'A1', INS: 'Juan', ACT: '' }];
   const afterOk = [{ assignment_id: 'A1', INS: 'Juan', ACT: '' }];

@@ -193,6 +193,35 @@ function computeConfigBootstrapPlan(current) {
   return { needsWrite: true, missingKeys: missingKeys, merged: merged, routes: routes, rows: rows };
 }
 
+/**
+ * Plan de escritura para alinear _CONFIG.BIGQUERY_JOB_PROJECT_ID a un proyecto de ejecucion ya
+ * validado (Seccion 5 del prompt maestro: "Probar/configurar proyecto de ejecucion"). Deliberadamente
+ * el unico campo del plan: cambiar donde se EJECUTA/FACTURA el job es ortogonal al DATA project
+ * (PROJECT_ID/DATASET_ID/TABLE_ID, ver fqTable en 25_BigQueryGateway.js, que nunca lee
+ * BIGQUERY_JOB_PROJECT_ID) y a la identidad/certificacion de snapshot (LOAD_KEY_ID, LOAD_TYPE_CODE,
+ * LOAD_VERSION_ID, INGESTION_DATETIME, SNAPSHOT_CERTIFICATION, ver SNAPSHOT_KEY_FIELD_ORDER en
+ * 20_Snapshot.js, que tampoco la incluye).
+ */
+function buildJobProjectUpdatePlan(candidateJobProjectId) {
+  return { BIGQUERY_JOB_PROJECT_ID: String(candidateJobProjectId || '').trim() };
+}
+
+/**
+ * Decide, a partir del resultado YA EJECUTADO de las dos pruebas no destructivas (permiso de crear
+ * el job + acceso de lectura a la fuente Carmen Gold real, ambas dry run), si corresponde proponer
+ * escribir BIGQUERY_JOB_PROJECT_ID. Pura: no ejecuta BigQuery ni toca _CONFIG. Si CUALQUIERA de las
+ * dos pruebas fallo, `shouldWrite` es false y `plan` es null — asi ningun llamador puede escribir
+ * _CONFIG a partir de un candidato solo parcialmente validado.
+ */
+function decideJobProjectUpdate(candidateJobProjectId, probeResult) {
+  var jobOk = !!(probeResult && probeResult.jobCreation && probeResult.jobCreation.ok);
+  var sourceOk = !!(probeResult && probeResult.sourceAccess && probeResult.sourceAccess.ok);
+  if (!jobOk || !sourceOk) {
+    return { shouldWrite: false, plan: null };
+  }
+  return { shouldWrite: true, plan: buildJobProjectUpdatePlan(candidateJobProjectId) };
+}
+
 // ---------------------------------------------------------------------------
 // I/O dependiente de Apps Script (no testeable desde Node; sin logica de negocio propia).
 // ---------------------------------------------------------------------------
@@ -308,6 +337,7 @@ if (typeof module !== 'undefined' && module.exports) {
     parseAllowedDow: parseAllowedDow, computeConfigHash: computeConfigHash,
     validateConfig: validateConfig, isSnapshotCertified: isSnapshotCertified,
     computeConfigBootstrapPlan: computeConfigBootstrapPlan,
+    buildJobProjectUpdatePlan: buildJobProjectUpdatePlan, decideJobProjectUpdate: decideJobProjectUpdate,
     CONFIG_REQUIRED_KEYS: CONFIG_REQUIRED_KEYS, ConfigService: ConfigService,
   };
 }

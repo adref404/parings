@@ -61,3 +61,14 @@ test('selectSnapshotCandidate - >1 candidatos -> NUNCA elige en silencio', () =>
   assert.equal(r.reason, 'MULTIPLE_CANDIDATES');
   assert.equal(r.candidates.length, 2);
 });
+
+test('T158 - cambiar BIGQUERY_JOB_PROJECT_ID NO modifica la identidad de snapshot (config no incluye ese campo en absoluto)', () => {
+  // buildSnapshotContext solo lee de config los campos de negocio (subsidiary/base/rango/anio/mes/
+  // flota/subflota); BIGQUERY_JOB_PROJECT_ID (proyecto de EJECUCION del job) no es uno de ellos, asi
+  // que el snapshot_key es identico sin importar bajo que proyecto se haya corrido el job.
+  const configConJobProjectA = Object.assign({}, baseConfig, { BIGQUERY_JOB_PROJECT_ID: 'operations-data-prod' });
+  const configConJobProjectB = Object.assign({}, baseConfig, { BIGQUERY_JOB_PROJECT_ID: 'datadem-home' });
+  const skA = computeSnapshotKey(buildSnapshotContext(configConJobProjectA, loadA));
+  const skB = computeSnapshotKey(buildSnapshotContext(configConJobProjectB, loadA));
+  assert.equal(skA, skB, 'el snapshot_key no debe depender del proyecto de ejecucion del job');
+});

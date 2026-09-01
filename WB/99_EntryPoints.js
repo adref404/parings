@@ -29,7 +29,10 @@ function wbMenuDiagnostico() {
       var h = r.sheetHeaders[name];
       lines.push('Hoja ' + name + ': ' + (!h.exists ? 'NO EXISTE (se creará al calcular)' : (h.matches ? 'OK' : 'DIFIERE, faltan: ' + h.missing.join(', '))));
     });
-    lines.push('BigQuery alcanzable: ' + (r.bigQueryReachable ? ('SI (≈' + r.bigQueryEstimatedBytes + ' bytes estimados)') : ('NO — ' + r.bigQueryError)));
+    lines.push('BigQuery — data project (fuente, fijo): ' + r.dataProject);
+    lines.push('BigQuery — job project (ejecución/facturación): ' + r.jobProject);
+    lines.push('BigQuery — creación de job (bigquery.jobs.create): ' + (r.jobCreationOk ? 'OK' : 'FAIL — ' + r.jobCreationError));
+    lines.push('BigQuery — acceso a fuente Carmen Gold: ' + (r.sourceAccessOk ? ('OK (≈' + r.bigQueryEstimatedBytes + ' bytes estimados)') : ('FAIL — ' + r.sourceAccessError)));
     lines.push('Último run: ' + (r.lastRun ? (r.lastRun.run_id + ' / ' + r.lastRun.status + ' / ' + r.lastRun.finished_at) : 'ninguno registrado aún'));
     ui.alert('Diagnóstico del sistema', lines.join('\n'), ui.ButtonSet.OK);
   } catch (e) {
@@ -140,6 +143,66 @@ function wbMenuProbarConsulta() {
     ui.alert('Probar consulta (dry run)', 'La consulta es válida.\nBytes estimados a procesar: ' + dry.totalBytesProcessed + '\n\nEsto NO ejecuta ni factura la consulta, solo la valida.', ui.ButtonSet.OK);
   } catch (e) {
     ui.alert('Probar consulta — Error', String(e.message || e), ui.ButtonSet.OK);
+  }
+}
+
+/**
+ * BigQuery -> Probar/configurar proyecto de ejecución (Seccion 5 del prompt maestro).
+ * Nunca escribe _CONFIG salvo que AMBAS pruebas no destructivas pasen Y el usuario confirme
+ * explícitamente. Nunca toca PROJECT_ID/DATASET_ID/TABLE_ID ni la identidad/certificación de
+ * snapshot: solo puede terminar escribiendo BIGQUERY_JOB_PROJECT_ID.
+ */
+function wbMenuProbarConfigurarProyectoEjecucion() {
+  var ui = SpreadsheetApp.getUi();
+  try {
+    var ctx = Orchestrator.loadContext();
+    var resp = ui.prompt(
+      'BigQuery — Probar/configurar proyecto de ejecución',
+      'Data project (fuente, fijo, nunca cambia) = ' + ctx.config.PROJECT_ID +
+        '\nJob project actual = ' + ctx.config.BIGQUERY_JOB_PROJECT_ID +
+        '\n\nProyecto de ejecución candidato a probar (dejar vacío para usar la propuesta "' +
+        WB_KNOWN.CANDIDATE_BIGQUERY_JOB_PROJECT_ID + '"):',
+      ui.ButtonSet.OK_CANCEL);
+    if (resp.getSelectedButton() !== ui.Button.OK) return;
+    var candidate = resp.getResponseText().trim() || WB_KNOWN.CANDIDATE_BIGQUERY_JOB_PROJECT_ID;
+
+    var report = Orchestrator.testJobProject(candidate);
+    var lines = [
+      'Data project = ' + report.dataProject,
+      'Job project actual = ' + report.currentJobProject,
+      'Job project candidato = ' + report.candidateJobProject,
+      '',
+      'Permiso de crear job (bigquery.jobs.create): ' +
+        (report.jobCreation.ok ? 'PASS' : 'FAIL — ' + report.jobCreation.error),
+      'Acceso a la fuente Carmen Gold (dry run del descubrimiento real): ' +
+        (report.sourceAccess.ok
+          ? ('PASS (≈' + report.sourceAccess.bytesProcessed + ' bytes estimados)')
+          : ('FAIL — ' + report.sourceAccess.error)),
+    ];
+
+    if (!report.decision.shouldWrite) {
+      lines.push('');
+      lines.push('_CONFIG NO fue modificado.');
+      if (!report.jobCreation.ok) {
+        lines.push('Hace falta roles/bigquery.jobUser (o equivalente) para la identidad que autoriza el script en el proyecto "' + candidate + '".');
+      }
+      ui.alert('Proyecto de ejecución — resultado', lines.join('\n'), ui.ButtonSet.OK);
+      return;
+    }
+
+    lines.push('');
+    lines.push('Ambas pruebas PASARON. ¿Confirma actualizar _CONFIG.BIGQUERY_JOB_PROJECT_ID a "' + candidate + '"?');
+    lines.push('(No toca PROJECT_ID/DATASET_ID/TABLE_ID ni la identidad/certificación de snapshot.)');
+    var confirm = ui.alert('Proyecto de ejecución — confirmar', lines.join('\n'), ui.ButtonSet.YES_NO);
+    if (confirm !== ui.Button.YES) {
+      ui.alert('No se modificó _CONFIG.');
+      return;
+    }
+
+    var applied = Orchestrator.applyJobProject(candidate);
+    ui.alert('_CONFIG actualizado: BIGQUERY_JOB_PROJECT_ID = ' + applied.plan.BIGQUERY_JOB_PROJECT_ID);
+  } catch (e) {
+    ui.alert('Proyecto de ejecución — Error', String(e.message || e), ui.ButtonSet.OK);
   }
 }
 

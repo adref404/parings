@@ -28,10 +28,12 @@
       "impact": "No se puede leer el contenido LIVE (pestanas, _CONFIG, RESUMEN) desde Claude Code. El codigo entregado usa SpreadsheetApp.openById() para ser correcto quando se ejecute autorizado por el usuario real en el navegador; la verificacion de esa lectura queda pendiente de ejecucion humana (Diagnostico del sistema)."
     },
     "BIGQUERY_JOBS_CREATE_GATE": {
-      "status": "IAM_BLOCKED",
-      "evidence": "bigquery.googleapis.com/v2/projects/operations-data-prod/queries -> 403 'User does not have bigquery.jobs.create permission in project operations-data-prod'. Mismo resultado probando so-cm-opanalytics-dev unicamente como projecto de billing (la tabla origen consultada seguia siendo carmen_gold, no se cambio de fuente).",
+      "status": "RESOLVED_VIA_JOB_PROJECT",
+      "evidence_operations_data_prod_as_job_project": "bigquery.googleapis.com/v2/projects/operations-data-prod/queries -> 403 'User does not have bigquery.jobs.create permission in project operations-data-prod' (reproducido de nuevo el 2026-09-01, identico al error que reporto el usuario en el menu productivo). Mismo resultado ya documentado con so-cm-opanalytics-dev como job project.",
+      "evidence_datadem_home_as_job_project": "2026-09-01, dry run REST directo (POST /bigquery/v2/projects/datadem-home/queries, dryRun:true, sin ejecutar/facturar job real), identidad erick.obradovich@latam.com: (1) SELECT 1 -> HTTP 200 jobComplete:true (bigquery.jobs.create PASS); (2) buildDiscoverySql(config real: LP/LIM/TM/763/2026-09) contra `operations-data-prod.carmen_gold.crew_pairing_carmen_system` ejecutado bajo datadem-home -> HTTP 200, schema=10 columnas (BQ_DISCOVERY_FIELDS) exacto, totalBytesProcessed=111890909 (~112MB, < MAXIMUM_BYTES_BILLED=300000000).",
       "read_metadata_status": "PASS (bigquery.tables.get 200 OK: 38,729,643 filas, particionado MONTH sobre pairing_start_date, clustered por crew_base_code, 84 columnas confirmadas)",
-      "impact": "No pude ejecutar consultas reales de descubrimiento de snapshot desde Claude Code. El BigQueryGateway se implemento y se dejo listo; la ejecucion real requiere que a la identidad que autorice el script (probablemente la misma cuenta) se le otorgue BigQuery Job User en algun proyecto."
+      "not_yet_verified": "El dry run del SQL leg-level certificado completo (buildCertifiedLegSql, 84 columnas BQ_REQUIRED_FIELDS) bajo datadem-home NO se probo (requeriria una identidad de carga real, que solo se obtiene certificando un snapshot -- ver Q3, nunca bypaseado). La _CONFIG LIVE del Spreadsheet productivo sigue con BIGQUERY_JOB_PROJECT_ID=operations-data-prod: alinearla requiere ejecutar el nuevo item de menu 'BigQuery -> Probar/configurar proyecto de ejecucion' desde el navegador (ver D19/D20 en DECISIONS.md), nunca se escribio automaticamente.",
+      "impact": "El bloqueo IAM en si sigue existiendo en operations-data-prod (es el DATA project, no deberia tener bigquery.jobs.create). Se identifico y verifico en vivo un JOB project distinto (datadem-home) que si tiene ambos permisos necesarios (crear job + leer la fuente Carmen Gold), desbloqueando 'Detectar snapshots del mes'/'Certificar snapshot'/'Previsualizar calculo' una vez que un humano confirme el cambio de proyecto de ejecucion desde el menu."
     }
   },
   "source_of_truth": {
@@ -58,11 +60,12 @@
     {"id": "F11", "name": "Lane assignment Cronograma (interval partitioning)", "status": "GREEN", "verified_by": "node:test"},
     {"id": "F12", "name": "QA pre/post-write (Q1-Q20), Q14/Q17 corridos en runtime, Q16 gate de deploy-time", "status": "GREEN", "verified_by": "node:test (133 tests) + wired en 80_Orchestrator.js"},
     {"id": "F13", "name": "Menu Apps Script + onOpen + trigger instalable standalone", "status": "YELLOW", "verified_by": "codigo escrito; requiere ejecucion humana autorizada en el Sheet real (BOUND_SCRIPT_GATE)"},
-    {"id": "F14", "name": "BigQueryGateway ejecucion real contra Carmen Gold", "status": "RED", "verified_by": "IAM_BLOCKED, ver gates"},
+    {"id": "F14", "name": "BigQueryGateway ejecucion real contra Carmen Gold", "status": "YELLOW", "verified_by": "job project candidato (datadem-home) verificado en vivo via dry run REST directo: jobs.create PASS + lectura de la fuente real PASS (~112MB). Falta que un humano aplique el cambio de BIGQUERY_JOB_PROJECT_ID en la _CONFIG LIVE (nuevo menu) y corra el flujo completo (certificar snapshot + Flujo B leg-level) en el Sheet real. Ver gates.BIGQUERY_JOBS_CREATE_GATE y D19/D20."},
     {"id": "F15", "name": "Historico Google Sheet nativo idempotente", "status": "YELLOW", "verified_by": "codigo escrito; requiere ejecucion live (Drive+Sheets) no disponible desde CLI"},
     {"id": "F16", "name": "clasp push + verificacion post-push", "status": "GREEN", "verified_by": "clasp push --force (manifest cambio, ver D18-push); clone a directorio temporal fuera del repo, diff byte a byte 23/23 archivos identicos"},
     {"id": "F17", "name": "clasp run diagnostico headless", "status": "RED", "verified_by": "RUNTIME_CLI_TEST=BLOCKED; 'Exception: ...storage. Error code NOT_FOUND' con y sin --nondev; causa: sin proyecto GCP estandar vinculado (ver D18)"},
     {"id": "F18", "name": "Git commits + push rama Pairings_WB", "status": "PENDING"},
-    {"id": "F19", "name": "Revision adversarial independiente (Seccion 44)", "status": "GREEN", "verified_by": "/code-review high (7 sub-agentes); 9 bugs reales corregidos, 1 hallazgo confirmado como diseno intencional (Seccion 7), ver D17"}
+    {"id": "F19", "name": "Revision adversarial independiente (Seccion 44)", "status": "GREEN", "verified_by": "/code-review high (7 sub-agentes); 9 bugs reales corregidos, 1 hallazgo confirmado como diseno intencional (Seccion 7), ver D17"},
+    {"id": "F20", "name": "BigQuery data project vs job project (testJobProject/applyJobProject, menu 'Probar/configurar proyecto de ejecucion') + fix de bug latente en discovery schema parser (BQ_DISCOVERY_FIELDS)", "status": "GREEN", "verified_by": "node:test (164 tests, 15 nuevos: D1-D5, T150-T159) + evidencia REST en vivo (dry run) de datadem-home como job project, ver D19/D20"}
   ]
 }
