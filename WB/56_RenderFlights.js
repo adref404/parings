@@ -1,69 +1,17 @@
 /**
  * 56_RenderFlights.js
- * FlightsRenderer: reconstruye "Vuelos" como OUTPUT leg-level (Seccion 22). Nunca escribe INS/ACT
- * (los proyecta desde RESUMEN, ya reconciliado); nunca vuelve a ser dueño de esos datos.
+ * FlightsRenderer: reconstruye "Vuelos" reproduciendo la UX de bloques del Spreadsheet LIVE
+ * (correccion posterior a D15/docs/DECISIONS.md — el layout leg-level plano anterior NO estaba
+ * aprobado). 17 columnas A:Q; filas 1-2 son notas operacionales humanas y NUNCA se tocan; fila 3
+ * son encabezados; los bloques (uno por assignment_id, nunca por pairing_id solo — Seccion 7:
+ * "un mismo pairing puede tener multiples assignment_id") empiezan en fila 5, con un piso visual
+ * de VUELOS_BLOCK_MIN_HEIGHT filas (relleno con filas en blanco si el pairing tiene menos legs).
  *
- * D15 (docs/DECISIONS.md): no se pudo leer el layout EXACTO de "Vuelos" en vivo (bloqueo D4), por
- * lo que este render usa una estructura leg-level explicita y auto-descriptiva (una fila por leg,
- * encabezados literales) en vez de restaurar posiciones fisicas heredadas (Seccion 22 prohibe
- * dependencias tipo R5/R14/R23). "Diagnostico del sistema" reporta si la hoja existente difiere
- * de este layout ANTES de que cualquier calculo productivo la sobrescriba.
+ * La posicion del bloque es PURAMENTE visual: cada fila lleva su propio assignment_id (columna A)
+ * y Pairing ID (columna B) — ningun calculo ni relacion usa el numero de fila como identidad.
+ * INS (columna O) y el detalle multilinea de la columna Q se PROYECTAN desde la fila ya
+ * reconciliada de RESUMEN; este renderer nunca se convierte en dueño de esos datos.
  */
-
-var VUELOS_HEADERS = ['Fecha', 'DiaSEM', 'Pairing', 'Vuelo', 'Ruta', 'Dep', 'Arr', 'STD', 'STA', 'INS', 'ACT', 'Inicio', 'Fin', 'assignment_status'];
-
-var FlightsRenderer = {
-  /**
-   * @param {Array} reconciledRows filas de RESUMEN ya reconciliadas (SummaryRenderer.build().reconciliation.rows),
-   *   cada una con `.pairing` (null si no hay pairing actual respaldando la fila: revision/orphan).
-   */
-  build: function (reconciledRows) {
-    var matrix = [];
-    reconciledRows.forEach(function (row) {
-      var p = row.pairing;
-      if (!p) return; // sin pairing actual (REVIEW_SOURCE_CHANGED/ORPHANED): nada que listar a nivel de vuelo
-      p.legs.forEach(function (leg) {
-        var r = leg.row;
-        var fecha = duParseDate(r.flight_start_date_local_time);
-        matrix.push([
-          fecha ? duFormatDisplay(fecha) : '',
-          fecha ? (DOW_ES[duDowCode(fecha)] || '') : '',
-          row.pairing_id,
-          r.flight_number,
-          p.route_display || '',
-          r.departure_airport_code,
-          r.arrival_airport_code,
-          duFormatTimeShort(duParseTime(r.flight_departure_time_crew_base)),
-          duFormatTimeShort(duParseTime(r.flight_arrival_hour_block_time)),
-          row.INS || '',
-          row.ACT || '',
-          p.occupied_start_date ? duFormatDisplay(p.occupied_start_date) : '',
-          p.occupied_end_date ? duFormatDisplay(p.occupied_end_date) : '',
-          row.assignment_status,
-        ]);
-      });
-    });
-
-    // Orden estable por Pairing y luego por STD (columna 7, indice 7) para lectura cronologica.
-    matrix.sort(function (a, b) {
-      if (a[2] !== b[2]) return String(a[2]) < String(b[2]) ? -1 : 1;
-      return String(a[7]) < String(b[7]) ? -1 : (String(a[7]) > String(b[7]) ? 1 : 0);
-    });
-
-    return { headers: VUELOS_HEADERS, matrix: matrix };
-  },
-
-  /** Escribe {headers, matrix} en la hoja Vuelos en batch (limpia y reconstruye: es un OUTPUT). */
-  writeToSheet: function (sheet, rendered) {
-    sheet.clearContents();
-    SheetStructure.ensureMinColumns(sheet, rendered.headers.length);
-    sheet.getRange(1, 1, 1, rendered.headers.length).setValues([rendered.headers]);
-    if (rendered.matrix.length > 0) {
-      SheetStructure.ensureMinRows(sheet, rendered.matrix.length + 1);
-      sheet.getRange(2, 1, rendered.matrix.length, rendered.headers.length).setValues(rendered.matrix);
-    }
-  },
-};
 
 if (typeof module !== 'undefined' && module.exports) {
   var __DateUtil56 = require('./05_DateUtil.js');
@@ -75,6 +23,134 @@ if (typeof module !== 'undefined' && module.exports) {
   var DOW_ES = require('./55_RenderSummary.js').DOW_ES;
 }
 
+var VUELOS_HEADERS = [
+  'assignment_id', 'Pairing ID', 'FECHA REAL', 'MES', 'Day of Week', 'Flight No', 'Dep Stn',
+  'Arr Stn', 'STD', 'STA', 'DAY', 'AC Type', 'HBT', 'DIA_DUTY', 'INS', '', 'ACT',
+];
+
+/** Piso visual minimo de un bloque (Seccion "critical_findings" de la correccion): nunca identidad. */
+var VUELOS_BLOCK_MIN_HEIGHT = 9;
+var VUELOS_NOTES_ROWS = 2; // filas 1-2: notas operacionales humanas, jamas escritas por este renderer
+var VUELOS_HEADER_ROW = VUELOS_NOTES_ROWS + 1; // fila 3
+var VUELOS_FIRST_BLOCK_ROW = VUELOS_HEADER_ROW + 2; // fila 5 (fila 4 queda como separador en blanco)
+
+/**
+ * Lineas "- RUTA" / "- CARRIER FLIGHT (STD-STA hrs)" por leg del pairing, estilo detalle
+ * multilinea observado en vivo. Puro: reusado tanto por Vuelos (columna Q) como por Cronograma
+ * (etiqueta de bloque, 57_RenderSchedule.js).
+ */
+function buildLegDetailLines(pairing) {
+  return pairing.legs.reduce(function (lines, leg) {
+    var r = leg.row;
+    var std = duFormatTimeShort(duParseTime(r.flight_departure_time_crew_base));
+    var sta = duFormatTimeShort(duParseTime(r.flight_arrival_hour_block_time));
+    lines.push('- ' + r.departure_airport_code + '-' + r.arrival_airport_code);
+    lines.push('- ' + r.carrier_code + ' ' + r.flight_number + ' (' + std + '-' + sta + ' hrs)');
+    return lines;
+  }, []);
+}
+
+function buildLegRow(reconciledRow, leg) {
+  var p = reconciledRow.pairing;
+  var r = leg.row;
+  var fecha = duParseDate(r.flight_start_date_local_time);
+  var acType = r.fleet_type_code || '';
+  var detail = [((reconciledRow.INS || '') + ' ' + acType).trim()].concat(buildLegDetailLines(p)).join('\n');
+
+  return [
+    reconciledRow.assignment_id,
+    reconciledRow.pairing_id,
+    fecha ? duFormatDisplay(fecha) : '',
+    fecha ? (fecha.m < 10 ? '0' : '') + fecha.m : '',
+    fecha ? (DOW_ES[duDowCode(fecha)] || '') : '',
+    r.flight_number,
+    r.departure_airport_code,
+    r.arrival_airport_code,
+    duFormatTimeShort(duParseTime(r.flight_departure_time_crew_base)),
+    duFormatTimeShort(duParseTime(r.flight_arrival_hour_block_time)),
+    r.duty_calendar_day_number,
+    acType,
+    duFormatTimeShort(duParseTime(r.duty_presentation_time_at)),
+    r.duty_day_number,
+    reconciledRow.INS || '',
+    '',
+    detail,
+  ];
+}
+
+var FlightsRenderer = {
+  headers: VUELOS_HEADERS,
+  blockMinHeight: VUELOS_BLOCK_MIN_HEIGHT,
+
+  /**
+   * Construye bloques (uno por assignment_id) a partir de filas de RESUMEN ya reconciliadas.
+   * @param {Array} reconciledRows SummaryRenderer.build().reconciliation.rows.
+   * @returns {Array<{assignment_id, pairing_id, rows: Array<Array>}>}
+   */
+  buildBlocks: function (reconciledRows) {
+    var blocks = reconciledRows
+      .filter(function (row) { return !!row.pairing; }) // sin pairing actual (revision/orphan): nada que listar
+      .map(function (row) {
+        var rows = row.pairing.legs.map(function (leg) { return buildLegRow(row, leg); });
+        return { assignment_id: row.assignment_id, pairing_id: row.pairing_id, rows: rows };
+      });
+
+    // Orden estable por Pairing ID y luego assignment_id — nunca por una posicion fisica previa.
+    blocks.sort(function (a, b) {
+      if (a.pairing_id !== b.pairing_id) return String(a.pairing_id) < String(b.pairing_id) ? -1 : 1;
+      return String(a.assignment_id) < String(b.assignment_id) ? -1 : 1;
+    });
+    return blocks;
+  },
+
+  build: function (reconciledRows) {
+    return { headers: VUELOS_HEADERS, blocks: FlightsRenderer.buildBlocks(reconciledRows) };
+  },
+
+  /** Aplana bloques a una matriz de filas, respetando BLOCK_MIN_HEIGHT como piso (nunca techo). */
+  layoutMatrix: function (blocks) {
+    var matrix = [];
+    blocks.forEach(function (block) {
+      var rows = block.rows.slice();
+      while (rows.length < VUELOS_BLOCK_MIN_HEIGHT) rows.push(new Array(VUELOS_HEADERS.length).fill(''));
+      matrix = matrix.concat(rows);
+    });
+    return matrix;
+  },
+
+  /**
+   * Escribe {headers, blocks} en "Vuelos" en un unico batch, preservando SIEMPRE las filas 1-2
+   * (notas humanas) y sin usar sheet.clear(): el clearContent se limita al rango de datos que este
+   * renderer administra (fila 3 en adelante), nunca a la hoja completa.
+   */
+  writeToSheet: function (sheet, rendered) {
+    var matrix = FlightsRenderer.layoutMatrix(rendered.blocks);
+    var full = [rendered.headers, new Array(rendered.headers.length).fill('')].concat(matrix);
+    var totalRows = full.length;
+    var lastDataRow = VUELOS_HEADER_ROW + totalRows - 1;
+
+    SheetStructure.ensureMinColumns(sheet, rendered.headers.length);
+    SheetStructure.ensureMinRows(sheet, lastDataRow);
+
+    // Limpia hasta el maximo entre lo ya existente y lo nuevo, para no dejar bloques fantasma de
+    // una corrida anterior con mas assignments; nunca toca las filas 1-2.
+    var clearThrough = Math.max(sheet.getLastRow(), lastDataRow);
+    var clearRows = clearThrough - VUELOS_HEADER_ROW + 1;
+    if (clearRows > 0) {
+      sheet.getRange(VUELOS_HEADER_ROW, 1, clearRows, rendered.headers.length).clearContent();
+    }
+    sheet.getRange(VUELOS_HEADER_ROW, 1, totalRows, rendered.headers.length).setValues(full);
+  },
+};
+
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { FlightsRenderer: FlightsRenderer, VUELOS_HEADERS: VUELOS_HEADERS };
+  module.exports = {
+    FlightsRenderer: FlightsRenderer,
+    VUELOS_HEADERS: VUELOS_HEADERS,
+    VUELOS_BLOCK_MIN_HEIGHT: VUELOS_BLOCK_MIN_HEIGHT,
+    VUELOS_NOTES_ROWS: VUELOS_NOTES_ROWS,
+    VUELOS_HEADER_ROW: VUELOS_HEADER_ROW,
+    VUELOS_FIRST_BLOCK_ROW: VUELOS_FIRST_BLOCK_ROW,
+    buildLegDetailLines: buildLegDetailLines,
+  };
 }

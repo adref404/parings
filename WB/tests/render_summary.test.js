@@ -2,8 +2,8 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { assemblePairings } = require('../30_PairingAssembler.js');
 const { evaluateWbRules } = require('../35_WBRules.js');
-const { SummaryRenderer } = require('../55_RenderSummary.js');
-const { RESUMEN_COLUMNS } = require('../00_Constants.js');
+const { SummaryRenderer, DOW_ES } = require('../55_RenderSummary.js');
+const { RESUMEN_COLUMNS, RESUMEN_HEADERS } = require('../00_Constants.js');
 
 const config = { CREW_BASE_CODE: 'LIM', MAX_OCCUPIED_DAYS: '3' };
 const routes = [{ code: 'MIA', priority: 1, role: 'PRIMARY' }, { code: 'SCL', priority: 2, role: 'SECONDARY' }, { code: 'ATL', priority: 3, role: 'FALLBACK' }];
@@ -100,4 +100,16 @@ test('SummaryRenderer.build - Fecha/Inicio/Fin se escriben como texto DD/MM/YYYY
   assert.equal(matrix[0][RESUMEN_COLUMNS.Fecha], '01/09/2026');
   assert.equal(matrix[0][RESUMEN_COLUMNS.Inicio], '01/09/2026');
   assert.equal(typeof matrix[0][RESUMEN_COLUMNS.Fecha], 'string');
+});
+
+test('RESUMEN_HEADERS - el header de la columna D es exactamente "DíaSEM" (T1, contrato LIVE)', () => {
+  assert.equal(RESUMEN_HEADERS[RESUMEN_COLUMNS.DiaSEM], 'DíaSEM');
+});
+
+test('SummaryRenderer.build - DíaSEM se escribe con el dia de semana completo en espanol (T2, contrato LIVE)', () => {
+  // 2026-09-01 es martes.
+  const pairings = evaluatedPairings([leg({})], 'SNAP1');
+  const { matrix } = SummaryRenderer.build(pairings, [], [], idGen);
+  assert.equal(matrix[0][RESUMEN_COLUMNS.DiaSEM], 'Martes');
+  assert.deepEqual(Object.values(DOW_ES).sort(), ['Domingo', 'Jueves', 'Lunes', 'Martes', 'Miércoles', 'Sábado', 'Viernes'].sort());
 });

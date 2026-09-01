@@ -26,7 +26,14 @@ if (typeof module !== 'undefined' && module.exports) {
   var reconcileAssignments = require('./40_Reconciliation.js').reconcileAssignments;
 }
 
-var DOW_ES = { MON: 'LUN', TUE: 'MAR', WED: 'MIE', THU: 'JUE', FRI: 'VIE', SAT: 'SAB', SUN: 'DOM' };
+/**
+ * Dia de semana completo en espanol, capitalizado (contrato LIVE de RESUMEN.DíaSEM: "Lunes".."Domingo",
+ * ver correccion post-D15). Cronograma reusa este mismo mapa en minuscula para su fila 1 (57_RenderSchedule.js).
+ */
+var DOW_ES = {
+  MON: 'Lunes', TUE: 'Martes', WED: 'Miércoles', THU: 'Jueves',
+  FRI: 'Viernes', SAT: 'Sábado', SUN: 'Domingo',
+};
 
 var SummaryRenderer = {
   /**

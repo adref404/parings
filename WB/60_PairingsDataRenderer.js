@@ -50,10 +50,12 @@ var PairingsDataRenderer = {
           p.primary_destination_code, p.route_display, p.route_priority,
           p.eligibility_status, p.eligibility_reason, p.requires_review,
           leg.leg_key, leg.leg_sequence,
-          r.carrier_code, r.flight_number, r.departure_airport_code, r.arrival_airport_code,
-          r.flight_start_date_local_time, r.flight_departure_time_crew_base, r.flight_arrival_hour_block_time,
-          r.flight_block_time, r.connection_time, r.duty_day_number, r.duty_calendar_day_number,
-          r.is_crew_passenger, r.flight_operation_type_code, r.service_type_code, r.flight_type_code,
+          r.flight_start_date_local_time, r.carrier_code, r.flight_number, r.departure_airport_code, r.arrival_airport_code,
+          r.route_airport_key, r.flight_departure_time_crew_base, r.flight_arrival_hour_block_time,
+          r.flight_block_time, r.is_crew_passenger, r.duty_day_number, r.duty_calendar_day_number,
+          r.duty_presentation_date_at, r.duty_presentation_time_at,
+          r.duty_end_date_home_base_timezone, r.duty_end_time_hb,
+          r.service_type_code, r.flight_type_code,
         ]);
       });
     });

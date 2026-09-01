@@ -70,3 +70,40 @@ test('PairingsDataRenderer.build - registra source_row_multiplicity real por leg
   assert.equal(rendered.matrix.length, 1, 'un unico leg logico');
   assert.equal(rendered.matrix[0][multIdx], 2);
 });
+
+test('PAIRINGS_DATA_HEADERS - contrato EXACTO de 54 columnas (T12, correccion post-D15)', () => {
+  assert.equal(PAIRINGS_DATA_HEADERS.length, 54);
+});
+
+test('PairingsDataRenderer.build - route_airport_key persiste (T13)', () => {
+  const pairings = evaluatedPairings([[leg({ route_airport_key: 'LIM-MIA' })]]);
+  const rendered = PairingsDataRenderer.build(pairings, snapshotContext);
+  const idx = rendered.headers.indexOf('route_airport_key');
+  assert.ok(idx !== -1, 'route_airport_key debe existir en el contrato');
+  assert.equal(rendered.matrix[0][idx], 'LIM-MIA');
+});
+
+test('PairingsDataRenderer.build - duty_presentation_date_at/time persisten (T14)', () => {
+  const pairings = evaluatedPairings([[leg({ duty_presentation_date_at: '2026-09-01', duty_presentation_time_at: '05:00:00' })]]);
+  const rendered = PairingsDataRenderer.build(pairings, snapshotContext);
+  const dateIdx = rendered.headers.indexOf('duty_presentation_date_at');
+  const timeIdx = rendered.headers.indexOf('duty_presentation_time_at');
+  assert.ok(dateIdx !== -1 && timeIdx !== -1);
+  assert.equal(rendered.matrix[0][dateIdx], '2026-09-01');
+  assert.equal(rendered.matrix[0][timeIdx], '05:00:00');
+});
+
+test('PairingsDataRenderer.build - duty_end_date_home_base_timezone/time persisten (T15)', () => {
+  const pairings = evaluatedPairings([[leg({ duty_end_date_home_base_timezone: '2026-09-01', duty_end_time_hb: '13:00:00' })]]);
+  const rendered = PairingsDataRenderer.build(pairings, snapshotContext);
+  const dateIdx = rendered.headers.indexOf('duty_end_date_home_base_timezone');
+  const timeIdx = rendered.headers.indexOf('duty_end_time_hb');
+  assert.ok(dateIdx !== -1 && timeIdx !== -1);
+  assert.equal(rendered.matrix[0][dateIdx], '2026-09-01');
+  assert.equal(rendered.matrix[0][timeIdx], '13:00:00');
+});
+
+test('PAIRINGS_DATA_HEADERS - connection_time/flight_operation_type_code NO se agregan al contrato persistido (T16)', () => {
+  assert.equal(PAIRINGS_DATA_HEADERS.indexOf('connection_time'), -1);
+  assert.equal(PAIRINGS_DATA_HEADERS.indexOf('flight_operation_type_code'), -1);
+});

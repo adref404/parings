@@ -64,7 +64,7 @@ var RESUMEN_COLUMNS = Object.freeze({
 });
 
 var RESUMEN_HEADERS = Object.freeze([
-  'pairing_instance_key', 'Pairing', 'Fecha', 'DiaSEM', 'Vuelo', 'Ruta',
+  'pairing_instance_key', 'Pairing', 'Fecha', 'DíaSEM', 'Vuelo', 'Ruta',
   'INS', 'ACT', 'Inicio', 'Fin', 'BP',
   'assignment_id', 'pairing_content_hash', 'assignment_status', 'source_snapshot_key',
 ]);
@@ -154,7 +154,12 @@ var BQ_REQUIRED_FIELDS = Object.freeze([
   'service_type_code', 'flight_type_code',
 ]);
 
-/** Esquema _PAIRINGS_DATA (encabezados de fila 1). Backend tecnico leg-level. */
+/**
+ * Esquema _PAIRINGS_DATA (encabezados de fila 1). Backend tecnico leg-level.
+ * Contrato EXACTO de 54 columnas ya vigente en el Spreadsheet LIVE (ver correccion post-D15):
+ * `connection_time` y `flight_operation_type_code` siguen disponibles en memoria desde BigQuery
+ * (BQ_REQUIRED_FIELDS) para calculo, pero NO se persisten como columna de esta hoja.
+ */
 var PAIRINGS_DATA_HEADERS = Object.freeze([
   'snapshot_key', 'load_key_id', 'load_type_code', 'load_version_id', 'ingestion_datetime',
   'subsidiary_code', 'crew_base_code', 'crew_range_type_code',
@@ -168,10 +173,12 @@ var PAIRINGS_DATA_HEADERS = Object.freeze([
   'primary_destination_code', 'route_display', 'route_priority',
   'eligibility_status', 'eligibility_reason', 'requires_review',
   'leg_key', 'leg_sequence',
-  'carrier_code', 'flight_number', 'departure_airport_code', 'arrival_airport_code',
-  'flight_start_date_local_time', 'flight_departure_time_crew_base', 'flight_arrival_hour_block_time',
-  'flight_block_time', 'connection_time', 'duty_day_number', 'duty_calendar_day_number',
-  'is_crew_passenger', 'flight_operation_type_code', 'service_type_code', 'flight_type_code',
+  'flight_start_date_local_time', 'carrier_code', 'flight_number', 'departure_airport_code', 'arrival_airport_code',
+  'route_airport_key', 'flight_departure_time_crew_base', 'flight_arrival_hour_block_time',
+  'flight_block_time', 'is_crew_passenger', 'duty_day_number', 'duty_calendar_day_number',
+  'duty_presentation_date_at', 'duty_presentation_time_at',
+  'duty_end_date_home_base_timezone', 'duty_end_time_hb',
+  'service_type_code', 'flight_type_code',
 ]);
 
 /** Esquema _RUNS (append-only; ver Seccion 31). */
