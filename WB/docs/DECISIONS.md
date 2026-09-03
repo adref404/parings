@@ -140,3 +140,173 @@ Se probó `datadem-home` de forma NO DESTRUCTIVA desde Claude Code, reusando el 
 **Verificacion pendiente de ejecucion en vivo (fuera de alcance de Claude Code, D4):** `createMonth`/`createNextMonth`/`resolveMonth`/los triggers dependen de DriveApp/SpreadsheetApp/PropertiesService/ScriptApp reales; se probaron exhaustivamente en Node solo las funciones PURAS de `77_WorkbookIdentity.js` (calculo de mes siguiente, nombre/clave canonicos, plan de reseteo, auto-sanado de identidad, decision del trigger diario). El comportamiento end-to-end de copiar/resetear/registrar un archivo real requiere el primer `Pairings WB > Meses > Crear próximo mes` ejecutado por un humano en el navegador.
 
 **Revision adversarial (`/code-review high`) y hallazgos resueltos:** (1) el reseteo de `_RUNS` reescribia el header via `AuditService.ensureHeaders` (pensada para MIGRAR un header ya escrito, no para arrancar de cero) despues de `clearContents()`, que preserva formato -- si la plantilla tuviera formato en el header, `getLastColumn()` podria no volver a 0 y desplazar `RUNS_HEADERS` a una columna incorrecta; se cambio a un rewrite directo del header, igual que `_PAIRINGS_DATA`. (2) `resetMonthlyState_` limpiaba Vuelos desde `VUELOS_HEADER_ROW` (fila 3, el header mismo), dejandolo en blanco hasta la primera corrida real pese a prometer preservar el layout; se cambio a limpiar desde `VUELOS_FIRST_BLOCK_ROW` (fila 5), preservando notas humanas + header + separador. (3) `createMonth` sostenia el `LockService` (a nivel de SCRIPT completo, no por-archivo) durante todo el descubrimiento/certificacion de snapshot en BigQuery, pudiendo bloquear con un falso "calculo en curso" a otro usuario operando sobre un archivo o mes completamente distinto; se acoto el lock a la ventana copiar+resetear+registrar (la unica que puede duplicar un archivo), liberandolo antes de tocar BigQuery. (4) si `resetMonthlyState_` fallaba a mitad de camino, la copia parcial en Drive quedaba huerfana e indetectable para `resolveMonth` (arriesgando un duplicado en el reintento); ahora un fallo durante el reseteo envia la copia a la papelera (mejor esfuerzo) antes de relanzar el error. (5) `decideCanonicalTitle` (Seccion 6, migracion de titulo) estaba implementada y probada pero nunca se invocaba desde ningun flujo real; se conecto dentro de `Orchestrator.loadContext` (idempotente, junto al auto-sanado de `MONTH_FILE_ID`), asi que la migracion de Septiembre ocurre sola la proxima vez que se use cualquier accion del menu sobre ese archivo.
+
+## D24. MAIN permanente + archivos mensuales por año (ajuste sobre D23)
+
+**Decision de negocio:** D23 introdujo "N Spreadsheets mensuales independientes", pero dejaba a
+`WB_KNOWN.EXPECTED_SPREADSHEET_ID` cumpliendo un doble rol ambiguo: archivo operativo de Septiembre
+Y plantilla de copia para meses futuros. En producción esto ya habia causado que ese archivo fuera
+renombrado a "Pairings WB - SEPTIEMBRE 2026" -- perdiendo su identidad de "centro de control"
+permanente. El modelo correcto: **un MAIN permanente** (`WB_KNOWN.MAIN_FILE_ID`, mismo ID fisico que
+`EXPECTED_SPREADSHEET_ID`, que se conserva solo por compatibilidad legacy) que **nunca es "un mes"**
+y **nunca se renombra a uno**, mas **N archivos mensuales** agrupados por carpeta anual
+(`WB/<AAAA>/`). El MAIN sigue siendo la plantilla estructural de `createMonth` (formato/protecciones/
+Diccionario), pero su identidad (`WORKBOOK_ROLE=MAIN`) es incompatible con ser tambien "el mes
+operativo": el pipeline de calculo (`runPipeline`/`certifySnapshot`/`applyJobProject`) lo rechaza
+explicitamente como target (`decidePipelineTargetAllowed`, `Orchestrator.assertNotMainTarget_`), y
+sus propias hojas operacionales se mantienen vacias (nunca es un segundo dueño de INS/ACT).
+
+**Cambios de codigo:**
+
+1. **`00_Constants.js`**: `WB_KNOWN.MAIN_FILE_ID` (mismo valor que `EXPECTED_SPREADSHEET_ID`, que se
+   conserva sin uso nuevo por compatibilidad). `WORKBOOK_ROLE = {MAIN, MONTH}`. `CONFIG_DEFAULTS`
+   gana `WORKBOOK_ROLE: ''` y `MAIN_FILE_ID: ''` (ambos se auto-sanan, nunca un default fijo).
+2. **`77_WorkbookIdentity.js`** (logica PURA nueva): `decideWorkbookRole` (auto-asigna MAIN solo si
+   el ID fisico coincide con `MAIN_FILE_ID` conocido; bloquea con MISMATCH cualquier archivo que
+   declare `WORKBOOK_ROLE=MAIN` sin serlo -- la garantia central de "MAIN nunca se renombra a un
+   mes"). `decideMainFileIdSelfHeal`/`decideMonthFileIdSelfHeal` ahora comparten un nucleo generico
+   (`decideFixedIdSelfHeal_`) sin perder el texto de error especifico de cada campo (verificado con
+   test de regresion: el error de `MAIN_FILE_ID` nunca menciona `MONTH_FILE_ID`, y viceversa).
+   `decideMainCanonicalTitle` (titulo fijo `"Pairings WB"`, nunca un nombre de mes).
+   `decidePipelineTargetAllowed` (gate puro que el Orchestrator usa para rechazar al MAIN).
+   `buildYearFolderName`/`decideEnsureFolderAction` (nombre de carpeta anual y decision
+   reusar-vs-crear, sin duplicar por carrera). `parseRegistryPropertyKey` (inversa de
+   `buildRegistryPropertyKey`, para enumerar TODO el registro). `decideMainViewSettings`/
+   `rankMainViewCandidates` (resolucion CURRENT_MONTH con fallback a LATEST_CREATED, o
+   LATEST_CREATED explicito; devuelve TODOS los candidatos ordenados para que la capa de I/O pueda
+   verificar fisicamente en cascada si el primero falla). `buildMonthResetConfigValues` ahora recibe
+   `mainFileId` y fuerza `WORKBOOK_ROLE=MONTH`+`MAIN_FILE_ID=<fijo>` en todo mes nuevo.
+3. **`80_Orchestrator.js`**: `loadContext` ahora decide el rol ANTES de auto-sanar nada, y
+   ramifica: MAIN nunca pasa por el auto-sanado de `MONTH_FILE_ID` ni por el renombrado a un nombre
+   de mes (siempre se auto-corrige a `"Pairings WB"` si difiere); MONTH conserva el comportamiento
+   D23 exacto, mas el auto-sanado de `MAIN_FILE_ID` al valor fijo conocido. `assertNotMainTarget_`
+   (usa `decidePipelineTargetAllowed`) se invoca en `runPipeline`/`certifySnapshot`/`applyJobProject`.
+   `runDiagnostics` reporta `workbookRole` y si el trigger diario de auto-creacion esta instalado.
+4. **`85_MonthlyWorkbook.js`**: `ensureYearFolder`/`findYearFolder` (carpeta `WB/<AAAA>/`, reusa si
+   existe, nunca duplica). `resolveMonth`/`createMonth` ahora operan dentro de la carpeta anual, no
+   en la raiz de WB. `clearOperationalSheetData_` (extraido de `resetMonthlyState_`, compartido con
+   la migracion del MAIN). **`MainWorkbookService`** (nuevo): resuelve el mensual objetivo del MAIN
+   a partir de Script Properties centrales (`MAIN_VIEW_MODE`, default `CURRENT_MONTH`) y el registro
+   de meses, verificando FISICAMENTE cada candidato (fileId abre, `WORKBOOK_ROLE=MONTH`,
+   REFERENCE_YEAR/MONTH coincide, carpeta padre = carpeta anual correcta) antes de confiar en el;
+   `resolveContext(ss)` es el punto de entrada unico que usan las acciones de menu: si `ss` es MONTH
+   devuelve su propio contexto, si es MAIN resuelve y devuelve el contexto del mensual objetivo
+   (nunca el del MAIN). **`migrateMainAndSeptember()`** (I/O, restart-safe, idempotente por pasos):
+   ver bitacora de ejecucion abajo.
+5. **`90_Menu.js`/`99_EntryPoints.js`**: labels actualizados (Seccion 1 de la mision D24):
+   "Actualizar Pairings WB"→"Actualizar mes actual", "Ir a RESUMEN"→"Abrir mes operativo" (nueva
+   funcion `wbMenuAbrirMesOperativo`, reemplaza a `wbMenuIrAResumen`: dentro de un MONTH activa su
+   RESUMEN igual que antes; desde el MAIN muestra el enlace del mensual resuelto, porque no se puede
+   "activar" una hoja de otro Spreadsheet). Nuevo `wbMenuPrevisualizarUltimoMesCreado` (Meses, fuerza
+   LATEST_CREATED puntualmente, nunca escribe nada). Nuevo `wbMenuCambiarVistaDelMain`
+   (Administración > Configuración, unico lugar que escribe `MAIN_VIEW_MODE`). `wbMenuCrearProximoMes`
+   ahora resuelve la base "mes siguiente a quien" segun el rol del archivo activo (el mismo archivo
+   si es MONTH; el mensual resuelto del MAIN si es MAIN; el mes calendario de HOY como bootstrap si
+   el MAIN todavia no tiene ningun mes creado). `configurarMenuPairingsWB()` usa `MAIN_FILE_ID`
+   (mismo ID fisico que antes) con mensajes actualizados a "MAIN" en vez de "Septiembre".
+
+**Alcance deliberadamente NO extendido a las acciones tecnicas de Administración que NO invocan el
+pipeline** (Diagnóstico, Ver configuración, Detectar snapshots, Certificar snapshot, Probar consulta,
+Comparar snapshot, Históricos, Ver último run, Ejecutar QA): estas siguen operando sobre el archivo
+ACTIVO tal cual (MAIN o MONTH), sin pasar por `MainWorkbookService.resolveContext`. Es una decision
+deliberada, no un descuido: un administrador que abre el MAIN y pide "Diagnóstico del sistema" espera
+ver el diagnostico DEL MAIN (para poder distinguirlo de un mensual), no el de un mensual resuelto
+silenciosamente en su lugar -- por eso `runDiagnostics` ahora reporta `workbookRole` explicitamente.
+La unica excepcion de escritura agregada fuera del pipeline es `wbMenuConfigurarAnioMes`, que rechaza
+explicitamente operar sobre el MAIN (no tiene un periodo operativo propio con sentido) con un mensaje
+accionable.
+
+**Si SI extendido a `wbMenuPrevisualizarCalculo`/`wbMenuReconciliarCambios`** (hallazgo real de la
+revision adversarial, ver mas abajo): ambas invocan `Orchestrator.runPipeline` directamente, que
+`assertNotMainTarget_` rechaza para el MAIN incluso en `dryRun=true` (Seccion 2: ni siquiera un
+preview de solo lectura debe operar sobre datos del MAIN, que tras la migracion quedan inertes/
+vacios). Dejarlas "operar sobre el archivo activo tal cual" las habria roto en cuanto se abrieran
+desde el MAIN. Se corrigio para que resuelvan el mensual objetivo primero, igual que las 4 acciones
+de usuario final y todo el submenu **Meses** (las unicas que la mision D24 exige explicitamente:
+"ejecutar acciones sobre el mensual seleccionado, NO sobre el MAIN").
+
+**MAIN como vista -- diseño elegido (Seccion 2 de la mision D24):** se evaluo construir una
+proyeccion read-only que copiara RESUMEN/Vuelos/Cronograma del mensual resuelto DENTRO de las hojas
+propias del MAIN. Se descarto deliberadamente: duplicar datos de asignaciones en dos Spreadsheets
+(aunque uno fuera "solo lectura" en la UI) reintroduce exactamente el riesgo que la mision pide
+evitar ("nunca existiran dos copias editables de INS/ACT") en cuanto cualquier proceso, humano o
+futuro, edite esa copia por error -- Apps Script no tiene un mecanismo nativo de hoja verdaderamente
+inmutable dentro de un Spreadsheet editable por el usuario. En su lugar, el MAIN muestra informacion
+en vivo LEYENDO DIRECTAMENTE el mensual resuelto en el momento de cada accion (`Ver estado del mes`,
+`Abrir mes operativo`, los resumenes de `Actualizar`/`Previsualizar`), sin persistir nunca una copia
+de esos datos en las hojas propias del MAIN. Sus propias RESUMEN/Vuelos/Cronograma se mantienen
+reseteadas (mismo `clearOperationalSheetData_` que un mensual recien creado) precisamente para que
+nunca puedan confundirse con una fuente de verdad.
+
+**Migracion LIVE (`migrateMainAndSeptember`, Seccion 4 de la mision) -- bitacora de ejecucion:**
+Claude Code implemento, probo (274 tests Node, 0 fallos) y desplego el codigo via `clasp push`
+(verificado por clone byte a byte), pero **no ejecuto la migracion LIVE**. Motivo, honesto y
+verificable, en la misma linea que D2/D3/D4/D18: (1) `clasp run` sigue bloqueado para este proyecto
+(D18: sin proyecto GCP estandar vinculado, error `NOT_FOUND` de `scripts.run`) -- no hay via de
+ejecutar codigo Apps Script real desde este CLI. (2) Un intento de inspeccionar el alcance real del
+token OAuth de `clasp` (llamada de solo lectura a `oauth2.googleapis.com/tokeninfo`, mismo metodo ya
+usado y documentado en D19) fue bloqueado por el clasificador de seguridad del entorno de Claude
+Code antes de ejecutarse, por el patron de la accion (enviar un token de acceso a una URL), no por
+su contenido. No se intento ningun rodeo. Sin poder confirmar que el token trae scope de escritura
+de Drive (D4 solo habia confirmado `drive.metadata.readonly`, explicitamente de solo lectura), y sin
+`clasp run`, ejecutar la migracion (renombrar el MAIN, mover Octubre, copiar Septiembre) por REST
+directo desde este CLI habria sido una escritura irreversible sobre produccion sin poder verificar de
+antemano si el permiso siquiera existe. Se opto por NO intentarlo. `migrateMainAndSeptember()` queda
+implementada, restart-safe e idempotente por pasos, lista para ejecutarse **una sola vez**,
+manualmente, desde el editor de Apps Script (misma exigencia de autorizacion OAuth interactiva que
+`configurarMenuPairingsWB()`/`ensureDailyAutoCreateTrigger()`, D2) -- ver `MANUAL_SETUP_REQUIRED` en
+el reporte de esta mision.
+
+**Revision adversarial (`/code-review high`) y hallazgos resueltos:**
+
+**Corregidos (bugs/regresiones reales):**
+1. `Orchestrator.loadContext` solo normalizaba `config.WORKBOOK_ROLE` al valor CANONICO
+   (mayusculas) en la rama `SELF_ASSIGN`, nunca en `OK` -- pero `WORKBOOK_ROLE` no esta en
+   `CONFIG_UPPER_KEYS` (`15_Config.js`), asi que un valor ya "valido" pero con casing distinto
+   (p.ej. `"main"` en vez de `"MAIN"`, escrito manualmente en `_CONFIG`) quedaba sin normalizar en
+   memoria. La comparacion estricta `config.WORKBOOK_ROLE === WORKBOOK_ROLE.MAIN` (tanto en
+   `loadContext` como en `decidePipelineTargetAllowed`) fallaba silenciosamente, desactivando la
+   proteccion del MAIN y permitiendo que `loadContext` corriera el self-heal/rename de MES sobre el
+   MAIN. Se corrigio para fijar `config.WORKBOOK_ROLE = roleDecision.role` (siempre canonico)
+   incondicionalmente, escribiendo la hoja solo si el valor crudo difiere.
+2. `runPipeline` rechaza al MAIN incluso en `dryRun=true` (`assertNotMainTarget_`), pero
+   `wbMenuPrevisualizarCalculo`/`wbMenuReconciliarCambios` seguian invocandolo directamente sobre el
+   archivo activo (documentado erroneamente como "fuera de alcance" en una version anterior de esta
+   nota) -- se rompian en cuanto se abrian desde el MAIN. Corregido: ambas resuelven el mensual
+   objetivo primero (`MainWorkbookService.resolveContext`), igual que las 4 acciones de usuario
+   final.
+3. `wbMenuAbrirMesOperativo` llamaba `Orchestrator.loadContext(active)` dos veces sobre el MISMO
+   archivo activo (una vez para decidir el rol, otra vez dentro de `MainWorkbookService.
+   resolveContext`), y ademas bloqueaba con un error tecnico crudo la navegacion simple a RESUMEN si
+   la identidad de `active` no se podia resolver (p.ej. una copia hecha fuera del flujo oficial) --
+   la antigua "Ir a RESUMEN" nunca habia tenido esa restriccion. Corregido: una unica llamada a
+   `resolveContext`, con degradacion elegante (activar RESUMEN igual, sin bloquear) si la resolucion
+   de identidad falla.
+4. El calculo de "hoy en el timezone del proyecto" (`Session.getScriptTimeZone()` +
+   `Utilities.formatDate`) estaba triplicado (`autoCreateNextMonthDaily_`,
+   `MainWorkbookService.resolveViewTarget`, el bootstrap de `wbMenuCrearProximoMes`). Extraido a
+   `getTodayInProjectTimezone_()` (85_MonthlyWorkbook.js), unica fuente para las 3.
+5. El aviso humano de "resolucion por respaldo" (mes actual no existe, se muestra el ultimo creado)
+   estaba redactado 3 veces con texto ligeramente distinto (`wbMenuVerEstadoDelMes`,
+   `wbMenuAbrirMesActual`, `wbMenuAbrirMesOperativo`). Unificado en `MAIN_FALLBACK_REASON_`
+   (99_EntryPoints.js).
+6. La verificacion de la copia de Septiembre en `migrateMainAndSeptember` comparaba solo la
+   CANTIDAD de filas de RESUMEN entre el MAIN y la copia -- no detectaria una copia con el mismo
+   total pero contenido distinto (caso extremo, pero la mision enfatiza "nunca perder contenido").
+   Reforzada a una huella de CONTENIDO exacto (`assignment_id`/`INS`/`ACT`/`Pairing` por fila, ver
+   `resumenRowsMatchExactly_`).
+7. (Simplificacion, mismo hallazgo que el bug 1) `decideMainFileIdSelfHeal` se invocaba dos veces
+   -- una por rama de rol -- contra el mismo valor esperado efectivo (`WB_KNOWN.MAIN_FILE_ID`, que
+   para un archivo MAIN coincide por construccion con su propio ID una vez que `decideWorkbookRole`
+   ya lo confirmo). Se unifico en una unica llamada antes del `if` de rol.
+
+**Evaluado y NO cambiado (riesgo aceptado, con razon documentada):**
+8. `MonthlyWorkbookService.resolveMonth` ahora escanea solo la carpeta ANUAL como fallback (en vez
+   de la raiz plana de WB) cuando el registro esta ausente/stale. Esto es el comportamiento
+   CORRECTO segun la Seccion 3 de la mision ("createMonth debe crear/buscar EXCLUSIVAMENTE dentro de
+   WB/<year>/"), no un bug: todo archivo mensual conocido (Septiembre, Octubre) queda dentro de su
+   carpeta anual tras `migrateMainAndSeptember`/`createMonth`, asi que no hay ningun archivo real que
+   quede huerfano en la raiz. El escenario planteado (un archivo que de alguna forma terminara fuera
+   de su carpeta anual Y con su registro perdido a la vez) es un estado ya anomalo que
+   `MainWorkbookService.verifyMonthCandidate_` esta precisamente diseñado para rechazar, no algo que
+   `resolveMonth` deba adivinar buscando en la raiz.

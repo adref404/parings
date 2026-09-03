@@ -11,13 +11,16 @@
 var Orchestrator = {
   /**
    * Carga config+rutas y valida estructura minima sobre el Spreadsheet EXPLICITO recibido (D23:
-   * modelo 1 archivo = 1 mes). NUNCA abre un ID fijo por defecto -- quien decide que Spreadsheet es
-   * "el" target de esta operacion es resolveWorkbookContext_() (85_MonthlyWorkbook.js), en el menu
-   * o en un trigger/background. Escribe SOLO bootstrap de _CONFIG faltante (incluye auto-asignar
-   * MONTH_FILE_ID la primera vez que se ve este archivo, ver decideMonthFileIdSelfHeal) y, si hace
-   * falta, renombra el archivo a su titulo canonico (Seccion 6 de la mision: migracion segura de
-   * "Pairings WB" a "Pairings WB - SEPTIEMBRE 2026" -- nunca cambia ID ni contenido operacional,
-   * ver decideCanonicalTitle). Ambos son idempotentes: sobre un archivo ya correcto son no-ops.
+   * modelo 1 archivo = 1 mes; D24: MAIN permanente + mensuales por anio). NUNCA abre un ID fijo por
+   * defecto -- quien decide que Spreadsheet es "el" target de esta operacion es
+   * MainWorkbookService.resolveContext()/resolveWorkbookContext_() (85_MonthlyWorkbook.js), en el
+   * menu o en un trigger/background. Escribe SOLO bootstrap de _CONFIG faltante (incluye auto-sanar
+   * WORKBOOK_ROLE/MAIN_FILE_ID -- ver decideWorkbookRole/decideMainFileIdSelfHeal -- y, solo para
+   * MONTH, MONTH_FILE_ID -- ver decideMonthFileIdSelfHeal) y, si hace falta, renombra el archivo a
+   * su titulo canonico: para MONTH, "Pairings WB - <MES> <AAAA>" (Seccion 6 de la mision original);
+   * para MAIN, siempre "Pairings WB", NUNCA un nombre de mes (D24, decideMainCanonicalTitle) -- esta
+   * es la garantia central de que el MAIN nunca se renombra a un mes. Todo es idempotente: sobre un
+   * archivo ya correcto son no-ops.
    */
   loadContext: function (ss) {
     if (!ss) {
@@ -26,20 +29,61 @@ var Orchestrator = {
     var ensured = ConfigService.ensureDefaults(ss); // solo rellena claves ausentes, nunca sobrescribe
     var config = canonicalizeConfig(ensured.values);
 
-    var identity = decideMonthFileIdSelfHeal(config.MONTH_FILE_ID, ss.getId());
-    if (identity.action === 'MISMATCH') throw new Error(identity.error);
-    if (identity.action === 'SELF_ASSIGN') {
-      ConfigService.writeValues(ss, { MONTH_FILE_ID: identity.value });
-      config.MONTH_FILE_ID = identity.value;
+    // decideWorkbookRole SIEMPRE devuelve el rol CANONICO (mayusculas) tanto en 'OK' como en
+    // 'SELF_ASSIGN' -- config.WORKBOOK_ROLE se fija aqui de forma incondicional (nunca solo en
+    // SELF_ASSIGN) porque WORKBOOK_ROLE no esta en CONFIG_UPPER_KEYS (15_Config.js): un valor ya
+    // "valido" pero con casing distinto (p.ej. "main" en vez de "MAIN", ver test "acepta
+    // minusculas/espacios") debia normalizarse en memoria igual, o la comparacion estricta de mas
+    // abajo (`=== WORKBOOK_ROLE.MAIN`) y el gate de Orchestrator.assertNotMainTarget_ lo tratarian
+    // como MONTH por error -- desactivando en silencio la proteccion del MAIN.
+    var roleDecision = decideWorkbookRole(config.WORKBOOK_ROLE, ss.getId(), WB_KNOWN.MAIN_FILE_ID);
+    if (roleDecision.action === 'MISMATCH') throw new Error(roleDecision.error);
+    if (config.WORKBOOK_ROLE !== roleDecision.role) {
+      ConfigService.writeValues(ss, { WORKBOOK_ROLE: roleDecision.role });
+    }
+    config.WORKBOOK_ROLE = roleDecision.role;
+
+    // MAIN_FILE_ID es SIEMPRE WB_KNOWN.MAIN_FILE_ID, sin importar el rol: para un archivo MAIN, su
+    // propio ID YA es ese fijo (roleDecision ya lo garantizo arriba o hubiera lanzado MISMATCH); para
+    // un MONTH, es el mismo valor fijo por definicion (D24). Un unico self-heal, no uno por rama.
+    var mainIdHeal = decideMainFileIdSelfHeal(config.MAIN_FILE_ID, WB_KNOWN.MAIN_FILE_ID);
+    if (mainIdHeal.action === 'MISMATCH') throw new Error(mainIdHeal.error);
+    if (mainIdHeal.action === 'SELF_ASSIGN') {
+      ConfigService.writeValues(ss, { MAIN_FILE_ID: mainIdHeal.value });
+      config.MAIN_FILE_ID = mainIdHeal.value;
     }
 
-    var titleDecision = decideCanonicalTitle(ss.getName(), config.REFERENCE_YEAR, config.REFERENCE_MONTH);
-    if (titleDecision.action === 'RENAME') ss.rename(titleDecision.value);
+    if (config.WORKBOOK_ROLE === WORKBOOK_ROLE.MAIN) {
+      var mainTitleDecision = decideMainCanonicalTitle(ss.getName());
+      if (mainTitleDecision.action === 'RENAME') ss.rename(mainTitleDecision.value);
+    } else {
+      var identity = decideMonthFileIdSelfHeal(config.MONTH_FILE_ID, ss.getId());
+      if (identity.action === 'MISMATCH') throw new Error(identity.error);
+      if (identity.action === 'SELF_ASSIGN') {
+        ConfigService.writeValues(ss, { MONTH_FILE_ID: identity.value });
+        config.MONTH_FILE_ID = identity.value;
+      }
+
+      var titleDecision = decideCanonicalTitle(ss.getName(), config.REFERENCE_YEAR, config.REFERENCE_MONTH);
+      if (titleDecision.action === 'RENAME') ss.rename(titleDecision.value);
+    }
 
     var routes = normalizeRoutes(ensured.routes);
     var allowedDow = parseAllowedDow(config.ALLOWED_OCCUPIED_DOW);
     var configHash = computeConfigHash(config, routes);
     return { ss: ss, config: config, routes: routes, allowedDow: allowedDow, configHash: configHash };
+  },
+
+  /**
+   * Gate D24 (Seccion 2 de la mision): lanza si `ss` resuelve a WORKBOOK_ROLE=MAIN. Usado por los
+   * metodos que ejecutan/mutan calculo (runPipeline, certifySnapshot, applyJobProject) para que el
+   * MAIN nunca pueda ser su target directo, sin importar quien los llame -- defensa en profundidad
+   * ademas de MainWorkbookService.resolveContext(), que ya resuelve el mensual objetivo ANTES de
+   * llegar aqui en el flujo normal del menu.
+   */
+  assertNotMainTarget_: function (ctx) {
+    var gate = decidePipelineTargetAllowed(ctx.config.WORKBOOK_ROLE);
+    if (!gate.allowed) throw new Error(gate.reason);
   },
 
   /** Diagnostico completo de solo lectura (Seccion 25/26/39). Nunca escribe (salvo bootstrap, via loadContext). */
@@ -115,6 +159,14 @@ var Orchestrator = {
 
     report.lastRun = AuditService.readLastRun(ctx.ss);
 
+    // Seccion 7 de la mision: que no haya que adivinar si el trigger diario de auto-creacion esta
+    // instalado. Filtra por handler+tipo, igual que ensureDailyAutoCreateTrigger (85_MonthlyWorkbook.js).
+    var autoCreateTriggers = ScriptApp.getProjectTriggers().filter(function (t) {
+      return t.getHandlerFunction() === 'autoCreateNextMonthDaily_' && t.getEventType() === ScriptApp.EventType.CLOCK;
+    });
+    report.autoCreateTriggerInstalled = autoCreateTriggers.length > 0;
+    report.workbookRole = ctx.config.WORKBOOK_ROLE;
+
     return report;
   },
 
@@ -138,6 +190,7 @@ var Orchestrator = {
   /** Flujo B (Seccion 12): certifica una identidad de carga exacta, elegida explicitamente por el usuario. */
   certifySnapshot: function (ss, loadIdentity) {
     var ctx = Orchestrator.loadContext(ss);
+    Orchestrator.assertNotMainTarget_(ctx);
     ConfigService.writeSnapshotCertification(ctx.ss, loadIdentity);
     return { certified: true, loadIdentity: loadIdentity };
   },
@@ -188,6 +241,7 @@ var Orchestrator = {
    */
   applyJobProject: function (ss, candidateJobProjectId) {
     var ctx = Orchestrator.loadContext(ss);
+    Orchestrator.assertNotMainTarget_(ctx);
     var plan = buildJobProjectUpdatePlan(candidateJobProjectId);
     ConfigService.writeValues(ctx.ss, plan);
     return { applied: true, plan: plan };
@@ -246,6 +300,7 @@ var Orchestrator = {
 
     try {
       var ctx = Orchestrator.loadContext(ss);
+      Orchestrator.assertNotMainTarget_(ctx);
       var qa = [];
 
       var configValidation = validateConfig(ctx.config, ctx.routes);

@@ -7,17 +7,21 @@
 
 /**
  * IDs de recursos productivos conocidos (Seccion 2 y 35 del prompt maestro).
- * D23 (docs/DECISIONS.md): EXPECTED_SPREADSHEET_ID ya NO es "el" Spreadsheet productivo unico --
- * es el ID FIJO de SEPTIEMBRE 2026 (el mes original), que ahora cumple un doble rol: (1) sigue
- * siendo el archivo operativo de Septiembre, con su propio MONTH_FILE_ID/REFERENCE_YEAR/MONTH en su
- * propia `_CONFIG`; (2) es la plantilla visual/estructural que `MonthlyWorkbookService.createMonth`
- * copia para crear cada mes nuevo (formato/Vuelos/Cronograma/RESUMEN/Diccionario/protecciones). El
- * backend NUNCA abre este ID como fallback silencioso para operar sobre "el" mes actual -- eso
- * requiere `resolveWorkbookContext_()` (85_MonthlyWorkbook.js), que resuelve el Spreadsheet activo
- * (accion de menu) o uno explicito por fileId (trigger/background), nunca este.
+ * D24 (docs/DECISIONS.md): arquitectura MAIN permanente + archivos mensuales por año.
+ * `MAIN_FILE_ID` es el ID FIJO y PERMANENTE del archivo de control ("Pairings WB"): nunca es "el"
+ * mes actual, nunca se renombra a un mes, y sigue siendo la plantilla visual/estructural que
+ * `MonthlyWorkbookService.createMonth` copia para crear cada mes nuevo (formato/Vuelos/Cronograma/
+ * RESUMEN/Diccionario/protecciones) -- ver D23/D24. `EXPECTED_SPREADSHEET_ID` se conserva IDENTICO
+ * (mismo valor fisico, era el ID de Septiembre/MAIN antes de D24) solo por compatibilidad con
+ * cualquier referencia legacy; el codigo nuevo usa `MAIN_FILE_ID` exclusivamente. El backend NUNCA
+ * abre este ID como fallback silencioso para operar sobre "el" mes actual -- eso requiere
+ * `MainWorkbookService.resolveContext()` (85_MonthlyWorkbook.js), que resuelve el Spreadsheet activo
+ * (accion de menu) o uno explicito por fileId (trigger/background), y si es el MAIN, resuelve ademas
+ * el mensual operativo objetivo.
  */
 var WB_KNOWN = Object.freeze({
   EXPECTED_SPREADSHEET_ID: '13gUbtsbVT1HpXemyJl510EZLi-xemMJYSwBCH2q9K0c',
+  MAIN_FILE_ID: '13gUbtsbVT1HpXemyJl510EZLi-xemMJYSwBCH2q9K0c',
   SHEET_FOLDER_ID: '1T6KLxeLkII8WSUmFrxK3RUCsI6w9i1iZ',
   HISTORY_FOLDER_ID: '11Aqpqiw7JKhTzJkdM19wKIlHV8MhOZxv',
   BIGQUERY_PROJECT_ID: 'operations-data-prod',
@@ -43,6 +47,14 @@ var SHEET_NAMES = Object.freeze({
   CONFIG: '_CONFIG',
   RUNS: '_RUNS',
 });
+
+/**
+ * Rol de un archivo del ecosistema Pairings WB (D24): MAIN es el archivo de control permanente
+ * (nunca "es" un mes); MONTH es un archivo operativo de un mes calendario especifico. Todo archivo
+ * declara su rol en `_CONFIG.WORKBOOK_ROLE`, auto-sanado la primera vez que se abre tras este
+ * cambio (ver decideWorkbookRole en 77_WorkbookIdentity.js).
+ */
+var WORKBOOK_ROLE = Object.freeze({ MAIN: 'MAIN', MONTH: 'MONTH' });
 
 var TECHNICAL_SHEETS = Object.freeze([
   SHEET_NAMES.PAIRINGS_DATA,
@@ -145,6 +157,12 @@ var CONFIG_DEFAULTS = Object.freeze({
   // esta clave (ver decideMonthFileIdSelfHeal en 77_WorkbookIdentity.js), incluyendo Septiembre
   // migrando. Default '' a proposito: nunca un ID fijo, cada archivo termina con el suyo.
   MONTH_FILE_ID: '',
+  // Identidad D24: WORKBOOK_ROLE ('MAIN'|'MONTH') y MAIN_FILE_ID (siempre WB_KNOWN.MAIN_FILE_ID,
+  // el ID fijo del archivo de control) se auto-sanan la primera vez que se abre CUALQUIER archivo
+  // tras este cambio (ver decideWorkbookRole/decideMainFileIdSelfHeal, 77_WorkbookIdentity.js).
+  // Default '' a proposito: nunca un valor fijo aqui, se decide en runtime segun el archivo.
+  WORKBOOK_ROLE: '',
+  MAIN_FILE_ID: '',
   AUTO_ARCHIVE_ON_SUCCESS: 'TRUE',
   LOAD_TYPE_CODE: 'PENDING_CERTIFICATION',
   LOAD_KEY_ID: 'PENDING_CERTIFICATION',
@@ -235,7 +253,7 @@ var RUNS_HEADERS = Object.freeze([
 
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
-    WB_KNOWN: WB_KNOWN, SHEET_NAMES: SHEET_NAMES, TECHNICAL_SHEETS: TECHNICAL_SHEETS,
+    WB_KNOWN: WB_KNOWN, WORKBOOK_ROLE: WORKBOOK_ROLE, SHEET_NAMES: SHEET_NAMES, TECHNICAL_SHEETS: TECHNICAL_SHEETS,
     VISIBLE_SHEETS: VISIBLE_SHEETS, SCHEMA_VERSION: SCHEMA_VERSION, QUERY_VERSION: QUERY_VERSION,
     RULESET_ID: RULESET_ID, RESUMEN_COLUMNS: RESUMEN_COLUMNS, RESUMEN_HEADERS: RESUMEN_HEADERS,
     RESUMEN_HUMAN_COLUMNS: RESUMEN_HUMAN_COLUMNS, DICCIONARIO_HEADERS: DICCIONARIO_HEADERS,

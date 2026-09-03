@@ -65,37 +65,55 @@ Técnicas (ocultas): `_PAIRINGS_DATA`, `_CONFIG`, `_RUNS`.
 sobrescriben en un refresh — ver `AssignmentReconciler` (`40_Reconciliation.js`) y
 `docs/DECISIONS.md` (D12/D13).
 
-## Modelo: 1 Apps Script central + N Spreadsheets mensuales (D23)
+## Modelo: MAIN permanente + archivos mensuales por año (D23/D24)
 
-Un único Apps Script controla **múltiples archivos**, uno por mes ("Pairings WB - SEPTIEMBRE 2026",
-"Pairings WB - OCTUBRE 2026", ...), todos en la carpeta operativa WB. Cada archivo conserva
-permanentemente su propio periodo, `assignment_id`/INS/ACT, outputs y auditoría — nunca se
-reutiliza el archivo de un mes para el siguiente, y nunca se reconcilian asignaciones humanas entre
-archivos de meses distintos. `Diccionario` sí se copia como maestro a cada mes nuevo. Ver
-`docs/DECISIONS.md` D23 y `77_WorkbookIdentity.js`/`85_MonthlyWorkbook.js`.
+Un único Apps Script controla **múltiples archivos**: un **MAIN permanente** ("Pairings WB", ID fijo
+`WB_KNOWN.MAIN_FILE_ID`) que nunca es "un mes" y nunca se renombra a uno, y **N archivos mensuales**
+independientes ("Pairings WB - SEPTIEMBRE 2026", "Pairings WB - OCTUBRE 2026", ...), agrupados por
+año dentro de `WB/<AAAA>/` (`WB/2026/`, `WB/2027/`, ...). Cada archivo mensual conserva
+permanentemente su propio periodo, `assignment_id`/INS/ACT, outputs y auditoría — nunca se reutiliza
+el archivo de un mes para el siguiente, nunca se reconcilian asignaciones humanas entre archivos de
+meses distintos, y **el MAIN nunca es un segundo dueño de INS/ACT**: sus propias hojas operacionales
+se mantienen vacías/reseteadas, y el pipeline de cálculo (`Orchestrator.runPipeline`/
+`certifySnapshot`/`applyJobProject`) rechaza explícitamente al MAIN como target. Todo archivo declara
+su rol en `_CONFIG.WORKBOOK_ROLE` (`MAIN`|`MONTH`), auto-sanado la primera vez que se abre.
+`Diccionario` sí se copia como maestro a cada mes nuevo (el MAIN sigue siendo la plantilla
+estructural que se copia). Ver `docs/DECISIONS.md` D23/D24 y
+`77_WorkbookIdentity.js`/`85_MonthlyWorkbook.js`.
+
+Desde el MAIN, las acciones de menú **resuelven** el mes operativo (el mes calendario actual, con
+respaldo automático al último mes creado si el actual no existe todavía — o siempre el último
+creado, si así se configura vía `MAIN_VIEW_MODE`) y actúan sobre ESE archivo, nunca sobre el MAIN
+directamente (`MainWorkbookService.resolveContext`, `85_MonthlyWorkbook.js`).
 
 ## Menú "Pairings WB" (único menú de nivel superior)
 
 Cuatro acciones de usuario final, en lenguaje operacional (sin BigQuery/snapshot/hash/`_CONFIG`):
 
-1. **Actualizar Pairings WB** → el flujo normal de cada mes: revisa todo silenciosamente
+1. **Actualizar mes actual** → el flujo normal de cada mes: revisa todo silenciosamente
    (configuración, snapshot, seguridad del baseline), previsualiza, muestra un resumen humano y
-   publica SOLO si usted confirma y todos los controles pasan.
+   publica SOLO si usted confirma y todos los controles pasan. Desde el MAIN, actúa sobre el mes
+   operativo resuelto.
 2. **Previsualizar cambios** → el mismo cálculo, con resumen humano, en modo de solo lectura.
 3. **Ver estado del mes** → vistazo rápido y barato (sin BigQuery) al periodo configurado.
-4. **Ir a RESUMEN** → activa la hoja RESUMEN del archivo mensual activo.
+4. **Abrir mes operativo** → en un archivo mensual, activa su hoja RESUMEN; desde el MAIN, muestra
+   el enlace del mes operativo resuelto.
 
-**Meses** (creación/apertura de archivos mensuales, D23):
+**Meses** (creación/apertura de archivos mensuales, D23/D24):
 
-5. **Crear próximo mes** → crea (o reutiliza, idempotente) el archivo del mes calendario siguiente
-   al de este archivo, sin afectar al actual. Intenta descubrir/certificar su snapshot solo; si es
-   ambiguo o falla, queda `PENDING` para administración.
+5. **Crear próximo mes** → crea (o reutiliza, idempotente) el archivo del mes calendario siguiente,
+   dentro de la carpeta de su año. Intenta descubrir/certificar su snapshot solo; si es ambiguo o
+   falla, queda `PENDING` para administración.
 6. **Crear mes manualmente** → igual, para el año/mes que se indique.
-7. **Abrir mes actual** / **Abrir carpeta de Pairings WB** → enlaces directos.
+7. **Abrir mes actual** → enlace directo al mes operativo (resuelto, si se abre desde el MAIN).
+8. **Previsualizar último mes creado** → previsualización de solo lectura del mensual más reciente,
+   sin importar el mes calendario actual; nunca altera archivos ni configuración.
+9. **Abrir carpeta de Pairings WB** → enlace directo a la carpeta operativa.
 
 Toda herramienta técnica/administrativa vive bajo **Administración** (Configuración / Fuente de
 datos / Proceso y reconciliación / Históricos / Auditoría y QA), que termina en **Guía de uso y
-administración** (sidebar con el manual completo). Ver `docs/DECISIONS.md` D21/D23.
+administración** (sidebar con el manual completo). `Configuración > Cambiar vista del MAIN` alterna
+`MAIN_VIEW_MODE` entre `CURRENT_MONTH`/`LATEST_CREATED`. Ver `docs/DECISIONS.md` D21/D23/D24.
 
 ### Flujo mensual técnico (para administración)
 
@@ -108,7 +126,7 @@ administración** (sidebar con el manual completo). Ver `docs/DECISIONS.md` D21/
    humanas migradas sin `pairing_instance_key`/`source_snapshot_key` (ver D21): publicar queda
    bloqueado hasta resolverlo — no hay forma de "forzar" el bloqueo.
 5. **Previsualización técnica** (Proceso y reconciliación) → dry run completo, sin escribir nada.
-6. **Actualizar Pairings WB** (menú principal) → escribe RESUMEN/Vuelos/Cronograma/_PAIRINGS_DATA,
+6. **Actualizar mes actual** (menú principal) → escribe RESUMEN/Vuelos/Cronograma/_PAIRINGS_DATA,
    corre QA post-escritura, y archiva el histórico automáticamente si `AUTO_ARCHIVE_ON_SUCCESS=TRUE`.
 7. **Ver último run** / **Ejecutar QA** (Auditoría y QA) para auditoría en cualquier momento.
 
@@ -116,12 +134,12 @@ administración** (sidebar con el manual completo). Ver `docs/DECISIONS.md` D21/
 
 El Apps Script (`1IFvtE2...`) **no está container-bound** a ningún Spreadsheet (confirmado vía
 `script.googleapis.com` — `parentId` vacío). Por eso `onOpen()` simple trigger nunca se dispara. La
-mitigación es un **trigger instalable por archivo**: para Septiembre (el único que existía antes de
-D23), ejecutar **una sola vez**, manualmente, desde el editor de Apps Script (Extensiones → Apps
-Script → seleccionar `configurarMenuPairingsWB` → Ejecutar), lo cual pedirá autorización OAuth
-interactiva. Cualquier mes creado después vía **Meses > Crear próximo mes/Crear mes manualmente**
-ya recibe su propio trigger automáticamente (`ensureOpenTriggerForSpreadsheet`, sin este paso
-manual). Ver `docs/DECISIONS.md` (D2, D23).
+mitigación es un **trigger instalable por archivo**: para el MAIN (el único archivo que existía antes
+de D23/D24), ejecutar **una sola vez**, manualmente, desde el editor de Apps Script (Extensiones →
+Apps Script → seleccionar `configurarMenuPairingsWB` → Ejecutar), lo cual pedirá autorización OAuth
+interactiva. Cualquier archivo mensual creado después vía **Meses > Crear próximo mes/Crear mes
+manualmente** (o migrado, ver `migrateMainAndSeptember`) ya recibe su propio trigger automáticamente
+(`ensureOpenTriggerForSpreadsheet`, sin este paso manual). Ver `docs/DECISIONS.md` (D2, D23, D24).
 
 Además, `ensureDailyAutoCreateTrigger` (ejecutar una sola vez, misma exigencia de autorización)
 registra el único trigger diario global que, a partir de `AUTO_CREATE_DAY` (Script Properties,

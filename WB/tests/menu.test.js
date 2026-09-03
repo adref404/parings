@@ -19,7 +19,7 @@ function findSubmenu(items, label) {
 
 // Handlers tecnicos/administrativos: NUNCA deben aparecer en el primer nivel del menu (M4).
 const TECHNICAL_FNS = [
-  'wbMenuDiagnostico', 'wbMenuVerConfiguracion', 'wbMenuConfigurarAnioMes',
+  'wbMenuDiagnostico', 'wbMenuVerConfiguracion', 'wbMenuConfigurarAnioMes', 'wbMenuCambiarVistaDelMain',
   'wbMenuDetectarSnapshots', 'wbMenuCertificarSnapshot', 'wbMenuCompararSnapshotConResumen',
   'wbMenuProbarConsulta', 'wbMenuProbarConfigurarProyectoEjecucion',
   'wbMenuPrevisualizarCalculo', 'wbMenuReconciliarCambios',
@@ -28,7 +28,7 @@ const TECHNICAL_FNS = [
 ];
 
 const END_USER_FNS = [
-  'wbMenuActualizarPairingsWB', 'wbMenuPrevisualizarCambios', 'wbMenuVerEstadoDelMes', 'wbMenuIrAResumen',
+  'wbMenuActualizarPairingsWB', 'wbMenuPrevisualizarCambios', 'wbMenuVerEstadoDelMes', 'wbMenuAbrirMesOperativo',
 ];
 
 test('M1 - existe exactamente UN menu de nivel superior llamado "Pairings WB"', () => {
@@ -46,7 +46,7 @@ test('M2 - las 4 acciones de usuario final aparecen, en orden, ANTES de "Adminis
   const adminIdx = topLabels.indexOf('Administración');
   assert.notEqual(adminIdx, -1, 'debe existir "Administración" en el nivel superior');
 
-  const expectedOrder = ['Actualizar Pairings WB', 'Previsualizar cambios', 'Ver estado del mes', 'Ir a RESUMEN'];
+  const expectedOrder = ['Actualizar mes actual', 'Previsualizar cambios', 'Ver estado del mes', 'Abrir mes operativo'];
   expectedOrder.forEach((label, i) => {
     assert.equal(topLabels[i], label, `posicion ${i} del menu debe ser "${label}"`);
   });
@@ -65,9 +65,12 @@ test('M3 - existe el submenu "Administración"', () => {
 
 // --- "Meses" (D23: 1 archivo = 1 mes) --------------------------------------------------------
 
-const MONTH_FNS = ['wbMenuCrearProximoMes', 'wbMenuCrearMesManualmente', 'wbMenuAbrirMesActual', 'wbMenuAbrirCarpetaPairingsWB'];
+const MONTH_FNS = [
+  'wbMenuCrearProximoMes', 'wbMenuCrearMesManualmente', 'wbMenuAbrirMesActual',
+  'wbMenuPrevisualizarUltimoMesCreado', 'wbMenuAbrirCarpetaPairingsWB',
+];
 
-test('existe el submenu "Meses" en el nivel superior, con exactamente las 4 acciones esperadas', () => {
+test('existe el submenu "Meses" en el nivel superior, con exactamente las 5 acciones esperadas (D24)', () => {
   const spec = buildPairingsWbMenuSpec_();
   const meses = findSubmenu(spec.items, 'Meses');
   assert.ok(meses, 'debe existir un submenu "Meses"');

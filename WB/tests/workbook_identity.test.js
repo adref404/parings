@@ -2,10 +2,15 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
   computeNextMonth, buildMonthKey, buildMonthlyWorkbookName, parseMonthlyWorkbookName,
-  buildRegistryPropertyKey, buildMonthResetConfigValues, decideMonthFileIdSelfHeal,
-  decideCanonicalTitle, CENTRAL_AUTOMATION_DEFAULTS, decideCentralAutomationSettings,
+  buildRegistryPropertyKey, parseRegistryPropertyKey, buildMonthResetConfigValues,
+  decideMonthFileIdSelfHeal, decideMainFileIdSelfHeal, decideWorkbookRole,
+  decideCanonicalTitle, decideMainCanonicalTitle, MAIN_CANONICAL_TITLE,
+  decidePipelineTargetAllowed, buildYearFolderName, decideEnsureFolderAction,
+  MAIN_VIEW_MODE, MAIN_VIEW_DEFAULTS, decideMainViewSettings, rankMainViewCandidates,
+  CENTRAL_AUTOMATION_DEFAULTS, decideCentralAutomationSettings,
   decideAutoCreateShouldRun,
 } = require('../77_WorkbookIdentity.js');
+const { WORKBOOK_ROLE } = require('../00_Constants.js');
 
 // --- computeNextMonth (M1, M2) -------------------------------------------------------------
 
@@ -53,15 +58,15 @@ test('buildMonthKey - mismo mes, mismo year/month en distintos tipos (string/num
   assert.equal(buildMonthKey(2026, 10), buildMonthKey('2026', '10'));
 });
 
-// --- buildMonthResetConfigValues (M4, M9) --------------------------------------------------
+// --- buildMonthResetConfigValues (M4, M9, D24) ----------------------------------------------
 
 test('M9 - buildMonthResetConfigValues: MONTH_FILE_ID apunta exactamente al fileId recibido', () => {
-  const values = buildMonthResetConfigValues(2026, 10, 'FILE_OCT_123');
+  const values = buildMonthResetConfigValues(2026, 10, 'FILE_OCT_123', 'MAIN_ID');
   assert.equal(values.MONTH_FILE_ID, 'FILE_OCT_123');
 });
 
 test('M4 - buildMonthResetConfigValues: snapshot/carga siempre PENDING_CERTIFICATION en un mes nuevo', () => {
-  const values = buildMonthResetConfigValues(2026, 10, 'FILE_OCT');
+  const values = buildMonthResetConfigValues(2026, 10, 'FILE_OCT', 'MAIN_ID');
   assert.equal(values.LOAD_KEY_ID, 'PENDING_CERTIFICATION');
   assert.equal(values.LOAD_TYPE_CODE, 'PENDING_CERTIFICATION');
   assert.equal(values.LOAD_VERSION_ID, 'PENDING_CERTIFICATION');
@@ -70,13 +75,19 @@ test('M4 - buildMonthResetConfigValues: snapshot/carga siempre PENDING_CERTIFICA
 });
 
 test('buildMonthResetConfigValues - REFERENCE_YEAR/MONTH quedan en el mes nuevo, no en el de origen', () => {
-  const values = buildMonthResetConfigValues(2026, 10, 'FILE_OCT');
+  const values = buildMonthResetConfigValues(2026, 10, 'FILE_OCT', 'MAIN_ID');
   assert.equal(values.REFERENCE_YEAR, '2026');
   assert.equal(values.REFERENCE_MONTH, '10');
 });
 
+test('D24 - buildMonthResetConfigValues: todo mes nuevo es WORKBOOK_ROLE=MONTH con MAIN_FILE_ID fijo, nunca hereda MAIN', () => {
+  const values = buildMonthResetConfigValues(2026, 10, 'FILE_OCT', 'MAIN_ID_FIXED');
+  assert.equal(values.WORKBOOK_ROLE, WORKBOOK_ROLE.MONTH);
+  assert.equal(values.MAIN_FILE_ID, 'MAIN_ID_FIXED');
+});
+
 test('buildMonthResetConfigValues - NO incluye ninguna clave operacional (se hereda de la plantilla, nunca se reescribe)', () => {
-  const values = buildMonthResetConfigValues(2026, 10, 'FILE_OCT');
+  const values = buildMonthResetConfigValues(2026, 10, 'FILE_OCT', 'MAIN_ID');
   ['CREW_BASE_CODE', 'BIGQUERY_JOB_PROJECT_ID', 'MAX_OCCUPIED_DAYS', 'ALLOWED_OCCUPIED_DOW'].forEach((k) => {
     assert.equal(Object.prototype.hasOwnProperty.call(values, k), false, k + ' no debe estar en el plan de reseteo');
   });
@@ -117,6 +128,170 @@ test('decideCanonicalTitle - titulo antiguo "Pairings WB" (Septiembre antes de e
 
 test('decideCanonicalTitle - sin year/month todavia (config recien creada) -> SKIP, no decide en falso', () => {
   assert.deepEqual(decideCanonicalTitle('Pairings WB', '', ''), { action: 'SKIP' });
+});
+
+// --- decideMainFileIdSelfHeal (D24, generico de decideMonthFileIdSelfHeal) -----------------
+
+test('decideMainFileIdSelfHeal - MAIN_FILE_ID vacio -> auto-asignacion segura', () => {
+  assert.deepEqual(decideMainFileIdSelfHeal('', 'MAIN_ID_123'), { action: 'SELF_ASSIGN', value: 'MAIN_ID_123' });
+});
+
+test('decideMainFileIdSelfHeal - coincide con el esperado -> OK', () => {
+  assert.deepEqual(decideMainFileIdSelfHeal('MAIN_ID', 'MAIN_ID'), { action: 'OK' });
+});
+
+test('decideMainFileIdSelfHeal - no coincide -> MISMATCH con el campo correcto en el mensaje (nunca "MONTH_FILE_ID")', () => {
+  const r = decideMainFileIdSelfHeal('OTRO_ID', 'MAIN_ID');
+  assert.equal(r.action, 'MISMATCH');
+  assert.match(r.error, /MAIN_FILE_ID/);
+  assert.doesNotMatch(r.error, /MONTH_FILE_ID/);
+});
+
+test('decideMonthFileIdSelfHeal sigue mencionando MONTH_FILE_ID en su error (no se corrompio al generalizar)', () => {
+  const r = decideMonthFileIdSelfHeal('OTRO_ID', 'ESTE_ID');
+  assert.match(r.error, /MONTH_FILE_ID/);
+});
+
+// --- decideWorkbookRole (D24, Seccion 1 de la mision: "MAIN nunca se renombra a un mes") ---
+
+test('decideWorkbookRole - vacio + ID del MAIN fijo -> SELF_ASSIGN MAIN', () => {
+  assert.deepEqual(decideWorkbookRole('', 'MAIN_ID', 'MAIN_ID'), { action: 'SELF_ASSIGN', role: WORKBOOK_ROLE.MAIN });
+});
+
+test('decideWorkbookRole - vacio + ID distinto al MAIN fijo -> SELF_ASSIGN MONTH', () => {
+  assert.deepEqual(decideWorkbookRole('', 'OCT_ID', 'MAIN_ID'), { action: 'SELF_ASSIGN', role: WORKBOOK_ROLE.MONTH });
+});
+
+test('decideWorkbookRole - ya declarado MAIN y el ID calza -> OK', () => {
+  assert.deepEqual(decideWorkbookRole('MAIN', 'MAIN_ID', 'MAIN_ID'), { action: 'OK', role: WORKBOOK_ROLE.MAIN });
+});
+
+test('decideWorkbookRole - declarado MAIN pero el ID NO es el MAIN fijo -> MISMATCH (copia indebida del MAIN)', () => {
+  const r = decideWorkbookRole('MAIN', 'COPIA_ID', 'MAIN_ID');
+  assert.equal(r.action, 'MISMATCH');
+  assert.match(r.error, /MAIN/);
+});
+
+test('decideWorkbookRole - ya declarado MONTH, sin importar el ID -> OK (ningun mensual necesita coincidir con nada fijo)', () => {
+  assert.deepEqual(decideWorkbookRole('MONTH', 'CUALQUIER_ID', 'MAIN_ID'), { action: 'OK', role: WORKBOOK_ROLE.MONTH });
+});
+
+test('decideWorkbookRole - valor desconocido -> MISMATCH explicito', () => {
+  const r = decideWorkbookRole('ALGO_RARO', 'X', 'MAIN_ID');
+  assert.equal(r.action, 'MISMATCH');
+  assert.match(r.error, /WORKBOOK_ROLE/);
+});
+
+test('decideWorkbookRole - acepta minusculas/espacios (mismo trato que otras claves de _CONFIG)', () => {
+  assert.deepEqual(decideWorkbookRole(' main ', 'MAIN_ID', 'MAIN_ID'), { action: 'OK', role: WORKBOOK_ROLE.MAIN });
+});
+
+// --- decideMainCanonicalTitle (D24: el MAIN nunca se renombra a un mes) --------------------
+
+test('decideMainCanonicalTitle - titulo ya "Pairings WB" -> OK, no renombra', () => {
+  assert.deepEqual(decideMainCanonicalTitle('Pairings WB'), { action: 'OK' });
+  assert.equal(MAIN_CANONICAL_TITLE, 'Pairings WB');
+});
+
+test('decideMainCanonicalTitle - titulo con nombre de mes (renombrado incorrectamente) -> RENAME a "Pairings WB"', () => {
+  assert.deepEqual(decideMainCanonicalTitle('Pairings WB - SEPTIEMBRE 2026'), { action: 'RENAME', value: 'Pairings WB' });
+});
+
+test('decideMainCanonicalTitle - NUNCA devuelve un nombre de mes como valor, sin importar el titulo actual', () => {
+  ['Pairings WB - OCTUBRE 2026', 'cualquier cosa', '', 'Pairings WB - ENERO 2027'].forEach((title) => {
+    const r = decideMainCanonicalTitle(title);
+    if (r.action === 'RENAME') assert.equal(r.value, 'Pairings WB');
+  });
+});
+
+// --- decidePipelineTargetAllowed (D24, Seccion 2: MAIN nunca es owner duplicado de INS/ACT) -
+
+test('decidePipelineTargetAllowed - MAIN nunca puede ser target de calculo', () => {
+  assert.equal(decidePipelineTargetAllowed(WORKBOOK_ROLE.MAIN).allowed, false);
+});
+
+test('decidePipelineTargetAllowed - MONTH siempre puede ser target de calculo', () => {
+  assert.equal(decidePipelineTargetAllowed(WORKBOOK_ROLE.MONTH).allowed, true);
+});
+
+// --- Carpetas anuales (D24, Seccion 3) ------------------------------------------------------
+
+test('buildYearFolderName - el anio como string, sin ceros ni separadores', () => {
+  assert.equal(buildYearFolderName(2026), '2026');
+  assert.equal(buildYearFolderName('2027'), '2027');
+});
+
+test('decideEnsureFolderAction - ninguna carpeta encontrada -> CREATE', () => {
+  assert.deepEqual(decideEnsureFolderAction([]), { action: 'CREATE' });
+  assert.deepEqual(decideEnsureFolderAction(undefined), { action: 'CREATE' });
+});
+
+test('decideEnsureFolderAction - ya existe una (o mas, por una carrera historica) -> REUSE la primera, nunca crea otra', () => {
+  assert.deepEqual(decideEnsureFolderAction(['FOLDER_A']), { action: 'REUSE', id: 'FOLDER_A' });
+  assert.deepEqual(decideEnsureFolderAction(['FOLDER_A', 'FOLDER_B']), { action: 'REUSE', id: 'FOLDER_A' });
+});
+
+// --- parseRegistryPropertyKey (D24, Seccion 5: inversa de buildRegistryPropertyKey) --------
+
+test('parseRegistryPropertyKey - roundtrip exacto con buildRegistryPropertyKey', () => {
+  const key = buildRegistryPropertyKey(2026, 10);
+  assert.deepEqual(parseRegistryPropertyKey(key), { year: 2026, month: 10 });
+});
+
+test('parseRegistryPropertyKey - clave ajena (otra automatizacion en el mismo proyecto) -> null, no lanza', () => {
+  assert.equal(parseRegistryPropertyKey('WB_CENTRAL_AUTO_CREATE_DAY'), null);
+  assert.equal(parseRegistryPropertyKey('WB_MONTH_FILE_2026-13'), null); // mes invalido
+  assert.equal(parseRegistryPropertyKey(''), null);
+  assert.equal(parseRegistryPropertyKey(null), null);
+});
+
+// --- decideMainViewSettings / rankMainViewCandidates (D24, Seccion 5: "MAIN VIEW STATE") ---
+
+test('decideMainViewSettings - default documentado: CURRENT_MONTH', () => {
+  assert.deepEqual(decideMainViewSettings({}), { viewMode: MAIN_VIEW_MODE.CURRENT_MONTH });
+  assert.equal(MAIN_VIEW_DEFAULTS.MAIN_VIEW_MODE, MAIN_VIEW_MODE.CURRENT_MONTH);
+});
+
+test('decideMainViewSettings - respeta LATEST_CREATED configurado', () => {
+  assert.deepEqual(decideMainViewSettings({ MAIN_VIEW_MODE: 'LATEST_CREATED' }), { viewMode: MAIN_VIEW_MODE.LATEST_CREATED });
+});
+
+test('decideMainViewSettings - valor invalido/basura -> default CURRENT_MONTH, nunca lanza', () => {
+  assert.deepEqual(decideMainViewSettings({ MAIN_VIEW_MODE: 'ALGO_INVALIDO' }), { viewMode: MAIN_VIEW_MODE.CURRENT_MONTH });
+});
+
+function entry(year, month, fileId) {
+  return { year, month, monthKey: buildMonthKey(year, month), fileId };
+}
+
+test('rankMainViewCandidates - sin meses registrados -> arreglo vacio, nunca lanza', () => {
+  assert.deepEqual(rankMainViewCandidates({ viewMode: MAIN_VIEW_MODE.CURRENT_MONTH }, [], 2026, 9), []);
+});
+
+test('rankMainViewCandidates - CURRENT_MONTH: el mes de hoy va primero si existe', () => {
+  const entries = [entry(2026, 9, 'SEPT'), entry(2026, 10, 'OCT')];
+  const ranked = rankMainViewCandidates({ viewMode: MAIN_VIEW_MODE.CURRENT_MONTH }, entries, 2026, 10);
+  assert.equal(ranked[0].fileId, 'OCT');
+});
+
+test('rankMainViewCandidates - CURRENT_MONTH: fallback al ultimo creado si el mes de hoy no existe', () => {
+  const entries = [entry(2026, 9, 'SEPT'), entry(2026, 10, 'OCT')];
+  const ranked = rankMainViewCandidates({ viewMode: MAIN_VIEW_MODE.CURRENT_MONTH }, entries, 2026, 11);
+  assert.equal(ranked[0].fileId, 'OCT'); // no hay Noviembre: el mas nuevo es Octubre
+});
+
+test('rankMainViewCandidates - LATEST_CREATED: siempre el mas nuevo primero, sin importar hoy', () => {
+  const entries = [entry(2026, 9, 'SEPT'), entry(2026, 10, 'OCT'), entry(2027, 1, 'ENE')];
+  const ranked = rankMainViewCandidates({ viewMode: MAIN_VIEW_MODE.LATEST_CREATED }, entries, 2026, 9);
+  assert.equal(ranked[0].fileId, 'ENE');
+  assert.deepEqual(ranked.map((e) => e.fileId), ['ENE', 'OCT', 'SEPT']);
+});
+
+test('rankMainViewCandidates - devuelve TODOS los candidatos en orden, para permitir verificacion fisica en cascada', () => {
+  const entries = [entry(2026, 9, 'SEPT'), entry(2026, 10, 'OCT')];
+  const ranked = rankMainViewCandidates({ viewMode: MAIN_VIEW_MODE.CURRENT_MONTH }, entries, 2026, 9);
+  assert.equal(ranked.length, 2);
+  assert.deepEqual(ranked.map((e) => e.fileId).sort(), ['OCT', 'SEPT']);
 });
 
 // --- decideCentralAutomationSettings / decideAutoCreateShouldRun (Seccion 4) ---------------

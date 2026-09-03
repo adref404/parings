@@ -25,6 +25,12 @@ function wbDiagnosticoHeadless(fileId) {
 // formatean entrada/salida.
 // ---------------------------------------------------------------------------------------------
 
+/** Texto humano UNICO (D24) para cuando MainWorkbookService resolvio por respaldo LATEST_CREATED
+ * porque el mes calendario actual todavia no existe (Seccion 5 de la mision). Una sola fuente de
+ * verdad para wbMenuVerEstadoDelMes/wbMenuAbrirMesActual/wbMenuAbrirMesOperativo, en vez de que cada
+ * una redacte su propia variante (riesgo de que diverjan con el tiempo). */
+var MAIN_FALLBACK_REASON_ = 'el mes calendario actual todavía no existe; mostrando el último mes creado';
+
 var MONTH_NAMES_ES_ = [
   'enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio',
   'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre',
@@ -76,7 +82,7 @@ function isCleanForPublish_(r) {
 }
 
 /**
- * "Actualizar Pairings WB": el flujo normal para el usuario final (mision <end_user_experience>).
+ * "Actualizar mes actual": el flujo normal para el usuario final (mision <end_user_experience>).
  * Comprueba silenciosamente configuración/snapshot/baseline (via el preview + gates existentes),
  * ejecuta una previsualización, muestra un resumen humano, pide confirmación, y publica SOLO si
  * todos los gates pasan. Ninguna incidencia tecnica se muestra cruda al usuario final.
@@ -86,8 +92,8 @@ function wbMenuActualizarPairingsWB() {
 
   var ss, ctx;
   try {
-    ss = resolveWorkbookContext_();
-    ctx = Orchestrator.loadContext(ss);
+    ctx = MainWorkbookService.resolveContext(resolveWorkbookContext_());
+    ss = ctx.ss; // D24: si el archivo activo es el MAIN, ctx/ss ya son los del mes operativo resuelto, nunca el MAIN.
   } catch (e) {
     ui.alert('Pairings WB', humanFriendlyBlockedMessage_(), ui.ButtonSet.OK);
     return;
@@ -125,7 +131,7 @@ function wbMenuActualizarPairingsWB() {
 }
 
 /**
- * "Previsualizar cambios": mismo pipeline dry-run que "Actualizar Pairings WB" pero con resumen
+ * "Previsualizar cambios": mismo pipeline dry-run que "Actualizar mes actual" pero con resumen
  * humano y SIN pedir confirmacion ni publicar nunca (mision <end_user_experience> #2).
  */
 function wbMenuPrevisualizarCambios() {
@@ -133,8 +139,8 @@ function wbMenuPrevisualizarCambios() {
 
   var ss, ctx;
   try {
-    ss = resolveWorkbookContext_();
-    ctx = Orchestrator.loadContext(ss);
+    ctx = MainWorkbookService.resolveContext(resolveWorkbookContext_());
+    ss = ctx.ss;
   } catch (e) {
     ui.alert('Pairings WB', humanFriendlyBlockedMessage_(), ui.ButtonSet.OK);
     return;
@@ -164,9 +170,11 @@ function wbMenuPrevisualizarCambios() {
 function wbMenuVerEstadoDelMes() {
   var ui = SpreadsheetApp.getUi();
   try {
-    var ss = resolveWorkbookContext_();
-    var ctx = Orchestrator.loadContext(ss);
+    var ctx = MainWorkbookService.resolveContext(resolveWorkbookContext_());
     var periodLabel = humanPeriodLabel_(ctx.config.REFERENCE_YEAR, ctx.config.REFERENCE_MONTH);
+    if (ctx.mainResolution && ctx.mainResolution.fallbackUsed) {
+      periodLabel += ' (' + MAIN_FALLBACK_REASON_ + ')';
+    }
     var baseline = SheetStructure.readResumenRows(ctx.ss).rows.filter(function (r) { return r.assignment_id; });
 
     var configValidation = validateConfig(ctx.config, ctx.routes);
@@ -194,27 +202,56 @@ function wbMenuVerEstadoDelMes() {
   }
 }
 
+/** Activa la hoja RESUMEN de `active` si existe; si no, avisa. Comportamiento simple, sin identidad. */
+function activateResumenSheet_(ui, active) {
+  var sheet = active.getSheetByName(SHEET_NAMES.RESUMEN);
+  if (!sheet) {
+    ui.alert('Pairings WB', 'La hoja RESUMEN no existe todavía. Use "Actualizar mes actual" primero.', ui.ButtonSet.OK);
+    return;
+  }
+  sheet.activate();
+}
+
 /**
- * "Ir a RESUMEN" (mision <end_user_experience> #4): actua sobre CUALQUIER archivo mensual del
- * ecosistema WB (D23), nunca solo sobre Septiembre -- usa el Spreadsheet activo (el que disparo el
- * click de menu), no un ID fijo.
+ * "Abrir mes operativo" (D24, Seccion 1 de la mision; reemplaza a la antigua "Ir a RESUMEN"): desde
+ * un archivo MONTH, activa su propia hoja RESUMEN (misma UX de siempre: navegacion en el mismo
+ * archivo). Desde el MAIN, NO puede "activar" una hoja de otro Spreadsheet abierto en otra pestaña
+ * -- en su lugar resuelve el mes operativo objetivo y muestra su periodo/enlace para que el usuario
+ * lo abra (mismo patron ya usado para "Abrir carpeta de Pairings WB").
+ *
+ * Una UNICA llamada a `MainWorkbookService.resolveContext` decide todo (nunca dos lecturas de
+ * `_CONFIG` sobre el mismo archivo activo). Si la identidad de `active` no se puede resolver (p.ej.
+ * una copia hecha fuera del flujo oficial, MISMATCH de MONTH_FILE_ID), esta accion en particular
+ * NUNCA debe bloquear una simple navegacion de solo lectura: degrada al comportamiento simple
+ * (activar RESUMEN si existe), igual que la antigua "Ir a RESUMEN" siempre hizo antes de D24.
  */
-function wbMenuIrAResumen() {
+function wbMenuAbrirMesOperativo() {
   var ui = SpreadsheetApp.getUi();
   try {
     var active = SpreadsheetApp.getActiveSpreadsheet();
     if (!active) {
-      ui.alert('Pairings WB', 'No se pudo ir a RESUMEN: ejecute este menú desde dentro de un archivo mensual de Pairings WB.', ui.ButtonSet.OK);
+      ui.alert('Pairings WB', 'No se pudo abrir el mes operativo: ejecute este menú desde dentro de un archivo de Pairings WB.', ui.ButtonSet.OK);
       return;
     }
-    var sheet = active.getSheetByName(SHEET_NAMES.RESUMEN);
-    if (!sheet) {
-      ui.alert('Pairings WB', 'La hoja RESUMEN no existe todavía. Use "Actualizar Pairings WB" primero.', ui.ButtonSet.OK);
+
+    var ctx;
+    try {
+      ctx = MainWorkbookService.resolveContext(active);
+    } catch (identityError) {
+      activateResumenSheet_(ui, active);
       return;
     }
-    sheet.activate();
+
+    if (!ctx.mainResolution) {
+      activateResumenSheet_(ui, active);
+      return;
+    }
+
+    var periodLabel = humanPeriodLabel_(ctx.config.REFERENCE_YEAR, ctx.config.REFERENCE_MONTH);
+    var note = ctx.mainResolution.fallbackUsed ? '\n\n(' + capitalize_(MAIN_FALLBACK_REASON_) + '.)' : '';
+    ui.alert('Abrir mes operativo', periodLabel + '\nEnlace: ' + ctx.ss.getUrl() + note, ui.ButtonSet.OK);
   } catch (e) {
-    ui.alert('Ir a RESUMEN — Error', String(e.message || e), ui.ButtonSet.OK);
+    ui.alert('Abrir mes operativo — Error', String(e.message || e), ui.ButtonSet.OK);
   }
 }
 
@@ -249,18 +286,37 @@ function buildMonthCreationSummary_(result) {
 }
 
 /**
- * "Meses > Crear próximo mes": crea (idempotente) el archivo del mes calendario siguiente AL DE
- * ESTE ARCHIVO (no al de hoy) -- ej. abierto desde Septiembre 2026, crea Octubre 2026.
+ * "Meses > Crear próximo mes": crea (idempotente) el archivo del mes calendario siguiente. Desde un
+ * archivo MONTH, es el mes siguiente A ESE ARCHIVO (no al de hoy) -- ej. abierto desde Septiembre
+ * 2026, crea Octubre 2026 (comportamiento identico a D23). Desde el MAIN (D24), es el mes siguiente
+ * al mes operativo resuelto (Seccion 1 de la mision: "crear meses" es una capacidad del MAIN); si el
+ * MAIN todavía no tiene ningún mes creado, usa el mes calendario de HOY como base (bootstrap).
  */
 function wbMenuCrearProximoMes() {
   var ui = SpreadsheetApp.getUi();
   try {
-    var ctx = Orchestrator.loadContext(resolveWorkbookContext_());
-    var periodLabel = humanPeriodLabel_(ctx.config.REFERENCE_YEAR, ctx.config.REFERENCE_MONTH);
-    var confirm = ui.alert('Crear próximo mes', 'Este archivo es ' + periodLabel + '. ¿Crear el mes siguiente?', ui.ButtonSet.YES_NO);
+    var ownCtx = Orchestrator.loadContext(resolveWorkbookContext_());
+    var baseYear, baseMonth, baseLabel;
+
+    if (ownCtx.config.WORKBOOK_ROLE === WORKBOOK_ROLE.MAIN) {
+      try {
+        var resolved = MainWorkbookService.resolveViewTarget();
+        baseYear = resolved.year; baseMonth = resolved.month;
+        baseLabel = 'el mes operativo actual (' + humanPeriodLabel_(baseYear, baseMonth) + ')';
+      } catch (e) {
+        var t = getTodayInProjectTimezone_();
+        baseYear = t.year; baseMonth = t.month;
+        baseLabel = 'el mes calendario actual (' + humanPeriodLabel_(baseYear, baseMonth) + '), porque el MAIN todavía no tiene ningún mes creado';
+      }
+    } else {
+      baseYear = ownCtx.config.REFERENCE_YEAR; baseMonth = ownCtx.config.REFERENCE_MONTH;
+      baseLabel = 'este archivo (' + humanPeriodLabel_(baseYear, baseMonth) + ')';
+    }
+
+    var confirm = ui.alert('Crear próximo mes', 'Se creará el mes siguiente a ' + baseLabel + '. ¿Continuar?', ui.ButtonSet.YES_NO);
     if (confirm !== ui.Button.YES) return;
 
-    var result = MonthlyWorkbookService.createNextMonth(ctx.config.REFERENCE_YEAR, ctx.config.REFERENCE_MONTH);
+    var result = MonthlyWorkbookService.createNextMonth(baseYear, baseMonth);
     ui.alert('Crear próximo mes', buildMonthCreationSummary_(result), ui.ButtonSet.OK);
   } catch (e) {
     ui.alert('Crear próximo mes — Error', String(e.message || e), ui.ButtonSet.OK);
@@ -285,23 +341,72 @@ function wbMenuCrearMesManualmente() {
   }
 }
 
-/** "Meses > Abrir mes actual": muestra el periodo y el enlace de ESTE archivo. */
+/**
+ * "Meses > Abrir mes actual": desde un archivo MONTH, muestra su propio periodo y enlace (igual que
+ * D23). Desde el MAIN (D24), resuelve y muestra el mes operativo actual (con aviso si es un
+ * respaldo al último creado porque el mes calendario todavía no existe).
+ */
 function wbMenuAbrirMesActual() {
   var ui = SpreadsheetApp.getUi();
   try {
-    var ss = resolveWorkbookContext_();
-    var ctx = Orchestrator.loadContext(ss);
+    var ctx = MainWorkbookService.resolveContext(resolveWorkbookContext_());
     var periodLabel = humanPeriodLabel_(ctx.config.REFERENCE_YEAR, ctx.config.REFERENCE_MONTH);
-    ui.alert('Abrir mes actual', periodLabel + '\nEnlace: ' + ss.getUrl(), ui.ButtonSet.OK);
+    var note = ctx.mainResolution && ctx.mainResolution.fallbackUsed
+      ? '\n\n(' + capitalize_(MAIN_FALLBACK_REASON_) + '.)' : '';
+    ui.alert('Abrir mes actual', periodLabel + '\nEnlace: ' + ctx.ss.getUrl() + note, ui.ButtonSet.OK);
   } catch (e) {
     ui.alert('Abrir mes actual — Error', String(e.message || e), ui.ButtonSet.OK);
   }
 }
 
-/** "Meses > Abrir carpeta de Pairings WB": enlace a la carpeta operativa con todos los meses. */
+/**
+ * "Meses > Previsualizar último mes creado" (D24, Seccion 1 de la mision): previsualización de solo
+ * lectura del mensual MÁS RECIENTE registrado, forzando el modo LATEST_CREATED puntualmente (nunca
+ * cambia la configuración central MAIN_VIEW_MODE ni ningún archivo mensual). Disponible desde
+ * cualquier archivo del ecosistema, no solo desde el MAIN.
+ */
+function wbMenuPrevisualizarUltimoMesCreado() {
+  var ui = SpreadsheetApp.getUi();
+  try {
+    var resolved = MainWorkbookService.resolveViewTarget(MAIN_VIEW_MODE.LATEST_CREATED);
+    var ctx = Orchestrator.loadContext(resolved.ss);
+    var periodLabel = humanPeriodLabel_(ctx.config.REFERENCE_YEAR, ctx.config.REFERENCE_MONTH);
+    var preview = Orchestrator.runPipeline(resolved.ss, true);
+    var msg = buildHumanUpdateSummary_(preview, 'Último mes creado: ' + periodLabel);
+    msg += '\n\nEsto es solo una previsualización: no se escribió ningún cambio, ni en este mes ni en el MAIN.';
+    ui.alert('Previsualizar último mes creado', msg, ui.ButtonSet.OK);
+  } catch (e) {
+    ui.alert('Previsualizar último mes creado — Error', String(e.message || e), ui.ButtonSet.OK);
+  }
+}
+
+/** "Meses > Abrir carpeta de Pairings WB": enlace a la carpeta operativa con todos los años/meses. */
 function wbMenuAbrirCarpetaPairingsWB() {
   var ui = SpreadsheetApp.getUi();
   ui.alert('Carpeta de Pairings WB', 'https://drive.google.com/drive/folders/' + WB_KNOWN.SHEET_FOLDER_ID, ui.ButtonSet.OK);
+}
+
+/**
+ * Administración > Configuración > "Cambiar vista del MAIN" (D24, Seccion 5 de la mision): cambia
+ * MAIN_VIEW_MODE central (CURRENT_MONTH/LATEST_CREATED). Nunca altera ningún archivo mensual ni el
+ * MAIN mismo -- solo la configuración CENTRAL de resolución.
+ */
+function wbMenuCambiarVistaDelMain() {
+  var ui = SpreadsheetApp.getUi();
+  try {
+    var resp = ui.prompt(
+      'Cambiar vista del MAIN',
+      'Modo actual de vista: ' + MainWorkbookService.readViewSettings_().viewMode +
+        '\n\nIngrese el nuevo modo:\n  1 = ' + MAIN_VIEW_MODE.CURRENT_MONTH + ' (mes calendario actual, con respaldo al último creado)\n  2 = ' + MAIN_VIEW_MODE.LATEST_CREATED + ' (siempre el último mes creado)',
+      ui.ButtonSet.OK_CANCEL);
+    if (resp.getSelectedButton() !== ui.Button.OK) return;
+    var choice = resp.getResponseText().trim();
+    var mode = choice === '2' ? MAIN_VIEW_MODE.LATEST_CREATED : (choice === '1' ? MAIN_VIEW_MODE.CURRENT_MONTH : choice.toUpperCase());
+    var applied = MainWorkbookService.writeMainViewMode(mode);
+    ui.alert('Vista del MAIN actualizada a: ' + applied);
+  } catch (e) {
+    ui.alert('Cambiar vista del MAIN — Error', String(e.message || e), ui.ButtonSet.OK);
+  }
 }
 
 /**
@@ -382,6 +487,7 @@ function wbMenuDiagnostico() {
     lines.push('Spreadsheet: ' + (r.spreadsheetOpened ? (r.spreadsheetName + ' (' + r.spreadsheetId + ')') : 'NO SE PUDO ABRIR'));
     if (!r.spreadsheetOpened) { ui.alert('Diagnóstico del sistema', 'Spreadsheet: ' + r.error, ui.ButtonSet.OK); return; }
     lines.push('Contexto de menú: ' + r.boundContext);
+    lines.push('Rol del archivo (WORKBOOK_ROLE): ' + r.workbookRole);
     lines.push('Config válida: ' + (r.configValid ? 'SI' : 'NO — ' + r.configErrors.join(' | ')));
     lines.push('Snapshot certificado: ' + r.snapshotCertification);
     Object.keys(r.sheetHeaders).forEach(function (name) {
@@ -393,6 +499,7 @@ function wbMenuDiagnostico() {
     lines.push('BigQuery — creación de job (bigquery.jobs.create): ' + (r.jobCreationOk ? 'OK' : 'FAIL — ' + r.jobCreationError));
     lines.push('BigQuery — acceso a fuente Carmen Gold: ' + (r.sourceAccessOk ? ('OK (≈' + r.bigQueryEstimatedBytes + ' bytes estimados)') : ('FAIL — ' + r.sourceAccessError)));
     lines.push('Último run: ' + (r.lastRun ? (r.lastRun.run_id + ' / ' + r.lastRun.status + ' / ' + r.lastRun.finished_at) : 'ninguno registrado aún'));
+    lines.push('Trigger creación automática: ' + (r.autoCreateTriggerInstalled ? 'INSTALADO' : 'NO INSTALADO'));
     ui.alert('Diagnóstico del sistema', lines.join('\n'), ui.ButtonSet.OK);
   } catch (e) {
     ui.alert('Diagnóstico del sistema — Error', String(e.message || e), ui.ButtonSet.OK);
@@ -425,6 +532,10 @@ function wbMenuConfigurarAnioMes() {
     var year = m[1], month = String(parseInt(m[2], 10));
 
     var ctx = Orchestrator.loadContext(resolveWorkbookContext_());
+    if (ctx.config.WORKBOOK_ROLE === WORKBOOK_ROLE.MAIN) {
+      ui.alert('El MAIN no tiene un periodo operativo propio (es un centro de control, D24). Abra el archivo del mes que quiere configurar, o use "Meses > Crear mes manualmente".');
+      return;
+    }
     // Cambiar de mes invalida cualquier certificacion previa (es especifica de un mes): se resetea
     // explicitamente a PENDING en vez de arrastrar una certificacion que ya no corresponde.
     ConfigService.writeValues(ctx.ss, {
@@ -488,7 +599,7 @@ function wbMenuCertificarSnapshot() {
       load_key_id: chosen.load_key_id, load_type_code: chosen.load_type_code,
       load_version_id: chosen.load_version_id, ingestion_datetime: chosen.ingestion_datetime,
     });
-    ui.alert('Snapshot certificado: ' + chosen.load_key_id + ' (' + chosen.ingestion_datetime + '). Ya puede usar "Previsualizar cambios" o "Actualizar Pairings WB".');
+    ui.alert('Snapshot certificado: ' + chosen.load_key_id + ' (' + chosen.ingestion_datetime + '). Ya puede usar "Previsualizar cambios" o "Actualizar mes actual".');
   } catch (e) {
     ui.alert('Certificar snapshot — Error', String(e.message || e), ui.ButtonSet.OK);
   }
@@ -567,20 +678,29 @@ function wbMenuProbarConfigurarProyectoEjecucion() {
   }
 }
 
+/**
+ * Previsualizacion tecnica (Proceso y reconciliacion): a diferencia de Diagnostico/Ver configuracion
+ * (que si muestran el archivo ACTIVO tal cual, D24), esta invoca `Orchestrator.runPipeline` -- que
+ * rechaza al MAIN como target incluso en dry run (`assertNotMainTarget_`, Seccion 2 de la mision:
+ * "MAIN no debe convertirse en segundo owner de INS/ACT", ni siquiera en preview con datos ya
+ * inertes tras la migracion). Por eso resuelve el mensual objetivo primero, igual que las 4 acciones
+ * de usuario final.
+ */
 function wbMenuPrevisualizarCalculo() {
   var ui = SpreadsheetApp.getUi();
   try {
-    var r = Orchestrator.runPipeline(resolveWorkbookContext_(), true);
+    var r = Orchestrator.runPipeline(MainWorkbookService.resolveContext(resolveWorkbookContext_()).ss, true);
     ui.alert('Previsualizar cálculo', formatRunSummary_(r) + '\n\nEsto fue un DRY RUN: no se escribió ninguna hoja operacional.', ui.ButtonSet.OK);
   } catch (e) {
     ui.alert('Previsualizar cálculo — Error', String(e.message || e), ui.ButtonSet.OK);
   }
 }
 
+/** Mismo motivo que wbMenuPrevisualizarCalculo: invoca runPipeline, asi que resuelve el mensual objetivo primero. */
 function wbMenuReconciliarCambios() {
   var ui = SpreadsheetApp.getUi();
   try {
-    var r = Orchestrator.runPipeline(resolveWorkbookContext_(), true);
+    var r = Orchestrator.runPipeline(MainWorkbookService.resolveContext(resolveWorkbookContext_()).ss, true);
     var lines = [
       'Asignaciones preservadas (ACTIVE): ' + r.assignmentsPreserved,
       'Relinkeadas a nuevo snapshot (RELINKED_IDENTICAL): ' + r.assignmentsRelinked,
@@ -588,7 +708,7 @@ function wbMenuReconciliarCambios() {
       'Huérfanas (ORPHANED_SOURCE_MISSING): ' + r.assignmentsOrphaned,
       'Nuevas (NEW): ' + r.assignmentsCreated,
       '',
-      'Esto fue solo un análisis (dry run): no se modificó ninguna asignación. Use "Actualizar Pairings WB" para aplicar.',
+      'Esto fue solo un análisis (dry run): no se modificó ninguna asignación. Use "Actualizar mes actual" para aplicar.',
     ];
     ui.alert('Reconciliar cambios de fuente', lines.join('\n'), ui.ButtonSet.OK);
   } catch (e) {
@@ -602,7 +722,7 @@ function wbMenuCrearVerificarHistorico() {
     var ctx = Orchestrator.loadContext(resolveWorkbookContext_());
     var lastRun = AuditService.readLastRun(ctx.ss);
     if (!lastRun || (lastRun.status !== 'PUBLISHED' && lastRun.status !== 'PUBLISHED_WITH_QA_WARNINGS')) {
-      ui.alert('No hay un run PUBLISHED reciente. Ejecute "Actualizar Pairings WB" primero.');
+      ui.alert('No hay un run PUBLISHED reciente. Ejecute "Actualizar mes actual" primero.');
       return;
     }
     var historyKey = computeHistoryKey({

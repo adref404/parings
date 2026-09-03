@@ -31,16 +31,17 @@ function onOpenInstalable_(e) {
 }
 
 /**
- * Registra (idempotente) el trigger instalable "On open" para el archivo de SEPTIEMBRE 2026 (el
- * mes original, unico que puede necesitar este arranque manual desde antes del modelo multi-mes).
- * Ejecutar UNA SOLA VEZ, manualmente, desde el editor de Apps Script. Cualquier mes creado despues
- * via "Meses > Crear mes" ya recibe su propio trigger automaticamente
+ * Registra (idempotente) el trigger instalable "On open" para el MAIN (D24: el archivo original,
+ * unico que puede necesitar este arranque manual desde antes de que existiera este mecanismo).
+ * Ejecutar UNA SOLA VEZ, manualmente, desde el editor de Apps Script. Cualquier archivo mensual
+ * creado despues via "Meses > Crear mes" (o migrado, ver migrateMainAndSeptember en
+ * 85_MonthlyWorkbook.js) ya recibe su propio trigger automaticamente
  * (ensureOpenTriggerForSpreadsheet, 85_MonthlyWorkbook.js), sin este paso manual.
  */
 function configurarMenuPairingsWB() {
-  var result = ensureOpenTriggerForSpreadsheet(WB_KNOWN.EXPECTED_SPREADSHEET_ID);
+  var result = ensureOpenTriggerForSpreadsheet(WB_KNOWN.MAIN_FILE_ID);
   return result.created
-    ? 'Trigger instalable creado. La proxima vez que se abra el Spreadsheet de Septiembre 2026, el menu aparecera automaticamente.'
+    ? 'Trigger instalable creado. La proxima vez que se abra el Spreadsheet MAIN ("Pairings WB"), el menu aparecera automaticamente.'
     : 'El trigger instalable ya existia. No se creo uno nuevo.';
 }
 
@@ -54,21 +55,24 @@ function buildPairingsWbMenuSpec_() {
   return {
     label: 'Pairings WB',
     items: [
-      { type: 'item', label: 'Actualizar Pairings WB', fn: 'wbMenuActualizarPairingsWB' },
+      { type: 'item', label: 'Actualizar mes actual', fn: 'wbMenuActualizarPairingsWB' },
       { type: 'item', label: 'Previsualizar cambios', fn: 'wbMenuPrevisualizarCambios' },
       { type: 'item', label: 'Ver estado del mes', fn: 'wbMenuVerEstadoDelMes' },
-      { type: 'item', label: 'Ir a RESUMEN', fn: 'wbMenuIrAResumen' },
+      { type: 'item', label: 'Abrir mes operativo', fn: 'wbMenuAbrirMesOperativo' },
       { type: 'separator' },
       {
-        // D23: 1 Apps Script central + N Spreadsheets mensuales independientes. Cada mes vive en su
-        // propio archivo (nunca se reutiliza uno para el mes siguiente); este submenu es la unica
-        // via de usuario final para crear/abrir esos archivos.
+        // D23/D24: 1 Apps Script central + 1 MAIN permanente + N Spreadsheets mensuales
+        // independientes, agrupados por carpeta anual (WB/<year>/). Cada mes vive en su propio
+        // archivo (nunca se reutiliza uno para el mes siguiente); este submenu es la unica via de
+        // usuario final para crear/abrir esos archivos. Desde el MAIN, estas acciones resuelven el
+        // mensual objetivo (nunca operan "sobre el MAIN como si fuera mensual").
         type: 'submenu',
         label: 'Meses',
         items: [
           { type: 'item', label: 'Crear próximo mes', fn: 'wbMenuCrearProximoMes' },
           { type: 'item', label: 'Crear mes manualmente', fn: 'wbMenuCrearMesManualmente' },
           { type: 'item', label: 'Abrir mes actual', fn: 'wbMenuAbrirMesActual' },
+          { type: 'item', label: 'Previsualizar último mes creado', fn: 'wbMenuPrevisualizarUltimoMesCreado' },
           { type: 'item', label: 'Abrir carpeta de Pairings WB', fn: 'wbMenuAbrirCarpetaPairingsWB' },
         ],
       },
@@ -81,6 +85,7 @@ function buildPairingsWbMenuSpec_() {
               { type: 'item', label: 'Diagnóstico del sistema', fn: 'wbMenuDiagnostico' },
               { type: 'item', label: 'Ver configuración técnica', fn: 'wbMenuVerConfiguracion' },
               { type: 'item', label: 'Configurar año y mes', fn: 'wbMenuConfigurarAnioMes' },
+              { type: 'item', label: 'Cambiar vista del MAIN', fn: 'wbMenuCambiarVistaDelMain' },
             ],
           },
           {
@@ -162,43 +167,58 @@ function buildGuiaHtmlContent_() {
     '  .estado { font-weight: bold; }',
     '</style>',
 
-    '<h2>A. Modelo: 1 archivo = 1 mes</h2>',
-    '<p>Cada mes de Pairings WB vive en su PROPIO archivo de Google Sheets (ej: ',
-    '"Pairings WB - OCTUBRE 2026"), nunca se reutiliza el archivo de un mes para el mes siguiente. ',
-    'Un Apps Script central controla todos los archivos. Cada archivo conserva permanentemente su ',
-    'propio periodo, sus asignaciones (INS/ACT/assignment_id), sus outputs y su auditoría — nunca se ',
-    'reconcilian asignaciones humanas entre archivos de meses distintos. El <code>Diccionario</code> ',
-    'de instructores sí se copia al crear cada mes nuevo. Use <b>Meses</b> para crear/abrir archivos.</p>',
+    '<h2>A. Modelo: MAIN permanente + 1 archivo = 1 mes</h2>',
+    '<p><b>Pairings WB</b> (MAIN) es el archivo de control PERMANENTE: nunca es "un mes" y nunca se ',
+    'renombra a uno. Cada mes de Pairings WB vive en su PROPIO archivo de Google Sheets, agrupado por ',
+    'año (ej: <code>WB/2026/Pairings WB - OCTUBRE 2026</code>); nunca se reutiliza el archivo de un ',
+    'mes para el mes siguiente. Un Apps Script central controla todos los archivos. Cada archivo ',
+    'mensual conserva permanentemente su propio periodo, sus asignaciones (INS/ACT/assignment_id), ',
+    'sus outputs y su auditoría — nunca se reconcilian asignaciones humanas entre archivos de meses ',
+    'distintos, y el MAIN nunca es un segundo dueño de INS/ACT. El <code>Diccionario</code> de ',
+    'instructores sí se copia al crear cada mes nuevo. Use <b>Meses</b> para crear/abrir archivos; ',
+    'desde el MAIN, las acciones de usuario final resuelven automáticamente el mes operativo (el mes ',
+    'calendario actual, o el último creado si el actual no existe todavía) y actúan sobre ESE ',
+    'archivo, nunca sobre el MAIN.</p>',
 
     '<h2>B. Meses</h2>',
     '<ul>',
     '  <li><b>Crear próximo mes</b>: crea (o reutiliza si ya existe) el archivo del mes calendario ',
-    '      siguiente al de este archivo. El nuevo archivo empieza sin asignaciones, sin ',
+    '      siguiente, dentro de la carpeta de su año. El nuevo archivo empieza sin asignaciones, sin ',
     '      <code>INS</code>/<code>ACT</code> heredados y con su snapshot pendiente de certificar ',
     '      (o certificado automáticamente si Carmen Gold solo ofrece un candidato).</li>',
     '  <li><b>Crear mes manualmente</b>: igual que arriba, pero para el año y mes que usted indique.</li>',
-    '  <li><b>Abrir mes actual</b>: muestra el periodo y el enlace de este archivo.</li>',
-    '  <li><b>Abrir carpeta de Pairings WB</b>: enlace a la carpeta de Drive con todos los meses.</li>',
+    '  <li><b>Abrir mes actual</b>: desde un archivo mensual, muestra su propio periodo y enlace; ',
+    '      desde el MAIN, resuelve y muestra el mes operativo actual.</li>',
+    '  <li><b>Previsualizar último mes creado</b>: previsualización de solo lectura del mensual más ',
+    '      reciente registrado, sin importar el mes calendario actual. Nunca altera archivos ni la ',
+    '      configuración de vista del MAIN.</li>',
+    '  <li><b>Abrir carpeta de Pairings WB</b>: enlace a la carpeta de Drive con todos los años/meses.</li>',
     '</ul>',
 
     '<h2>C. Opciones del usuario final</h2>',
     '<ul>',
-    '  <li><b>Actualizar Pairings WB</b>: el flujo normal de cada mes. Revisa todo silenciosamente ',
+    '  <li><b>Actualizar mes actual</b>: el flujo normal de cada mes. Revisa todo silenciosamente ',
     '      (configuración, snapshot, seguridad del baseline), calcula una previsualización, muestra ',
-    '      un resumen humano y solo publica si usted confirma y todos los controles pasan.</li>',
+    '      un resumen humano y solo publica si usted confirma y todos los controles pasan. Desde el ',
+    '      MAIN, actúa sobre el mes operativo resuelto, nunca sobre el MAIN mismo.</li>',
     '  <li><b>Previsualizar cambios</b>: el mismo cálculo, en modo de solo lectura. Nunca escribe nada ',
     '      en el Spreadsheet.</li>',
     '  <li><b>Ver estado del mes</b>: un vistazo rápido y económico (sin consultar la fuente de datos) ',
     '      al periodo configurado, si está listo para actualizar y cuántas asignaciones hay.</li>',
-    '  <li><b>Ir a RESUMEN</b>: lo lleva directo a la hoja RESUMEN.</li>',
+    '  <li><b>Abrir mes operativo</b>: en un archivo mensual, lo lleva directo a su hoja RESUMEN; ',
+    '      desde el MAIN, muestra el enlace del mes operativo resuelto.</li>',
     '</ul>',
 
     '<h2>D. Administración</h2>',
     '<h3>Configuración</h3>',
     '<ul>',
-    '  <li><b>Diagnóstico del sistema</b>: revisa Spreadsheet, hojas, BigQuery y el último run.</li>',
+    '  <li><b>Diagnóstico del sistema</b>: revisa Spreadsheet, hojas, BigQuery, el último run y si el ',
+    '      trigger diario de auto-creación de mes está instalado.</li>',
     '  <li><b>Ver configuración técnica</b>: muestra todas las claves de <code>_CONFIG</code> y rutas.</li>',
     '  <li><b>Configurar año y mes</b>: cambia el periodo objetivo (reinicia la certificación de snapshot).</li>',
+    '  <li><b>Cambiar vista del MAIN</b>: elige si el MAIN refleja el mes calendario actual (con ',
+    '      respaldo al último creado si no existe todavía) o siempre el último mes creado. No altera ',
+    '      ningún archivo mensual.</li>',
     '</ul>',
     '<h3>Fuente de datos</h3>',
     '<ul>',

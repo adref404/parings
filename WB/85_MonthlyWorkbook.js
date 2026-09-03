@@ -26,7 +26,51 @@ var WorkbookRegistry = {
 var CENTRAL_PROPERTY_KEYS_ = {
   AUTO_CREATE_NEXT_MONTH: 'WB_CENTRAL_AUTO_CREATE_NEXT_MONTH',
   AUTO_CREATE_DAY: 'WB_CENTRAL_AUTO_CREATE_DAY',
+  MAIN_VIEW_MODE: 'WB_CENTRAL_MAIN_VIEW_MODE',
+  MAIN_VIEW_FILE_ID: 'WB_CENTRAL_MAIN_VIEW_FILE_ID',
 };
+
+// -------------------------------------------------------------------------------------------
+// Carpetas anuales (D24, Seccion 3 de la mision): "WB/<year>/" agrupa los mensuales de un anio.
+// Nunca duplican por retry/concurrencia PORQUE quien las crea (createMonth, migrateMainAndSeptember)
+// ya sostiene el LockService de su propia seccion critica -- estas funciones no toman lock propio.
+// -------------------------------------------------------------------------------------------
+
+/** Busca (SIN crear) la carpeta del anio dentro de la carpeta operativa WB. null si no existe aun. */
+function findYearFolder(year) {
+  var parent = DriveApp.getFolderById(WB_KNOWN.SHEET_FOLDER_ID);
+  var name = buildYearFolderName(year);
+  var it = parent.getFoldersByName(name);
+  var ids = [];
+  while (it.hasNext()) ids.push(it.next().getId());
+  var decision = decideEnsureFolderAction(ids);
+  return decision.action === 'REUSE' ? DriveApp.getFolderById(decision.id) : null;
+}
+
+/** Reutiliza (si existe) o crea (si falta) la carpeta del anio, SIN duplicar. Ver decideEnsureFolderAction. */
+function ensureYearFolder(year) {
+  var existing = findYearFolder(year);
+  if (existing) return existing;
+  var parent = DriveApp.getFolderById(WB_KNOWN.SHEET_FOLDER_ID);
+  return parent.createFolder(buildYearFolderName(year));
+}
+
+/**
+ * {year, month, day} de HOY en el timezone del PROYECTO (Session.getScriptTimeZone(), nunca
+ * `new Date(string)`/timezone implicito del proceso -- Seccion 21). Fuente UNICA reusada por
+ * `autoCreateNextMonthDaily_`, `MainWorkbookService.resolveViewTarget` y el bootstrap de
+ * `wbMenuCrearProximoMes` (99_EntryPoints.js) para que un futuro fix de timezone/DST se aplique una
+ * sola vez, no en 3 copias independientes que podrian divergir.
+ */
+function getTodayInProjectTimezone_() {
+  var tz = Session.getScriptTimeZone();
+  var today = new Date();
+  return {
+    year: parseInt(Utilities.formatDate(today, tz, 'yyyy'), 10),
+    month: parseInt(Utilities.formatDate(today, tz, 'M'), 10),
+    day: parseInt(Utilities.formatDate(today, tz, 'd'), 10),
+  };
+}
 
 /** Lee la automatizacion CENTRAL (Script Properties, no por-archivo) con defaults si no se configuro. */
 function readCentralAutomationSettings_() {
@@ -46,12 +90,8 @@ function readCentralAutomationSettings_() {
  */
 function autoCreateNextMonthDaily_() {
   var settings = readCentralAutomationSettings_();
-  var tz = Session.getScriptTimeZone();
-  var today = new Date();
-  var y = parseInt(Utilities.formatDate(today, tz, 'yyyy'), 10);
-  var m = parseInt(Utilities.formatDate(today, tz, 'M'), 10);
-  var d = parseInt(Utilities.formatDate(today, tz, 'd'), 10);
-  var decision = decideAutoCreateShouldRun(settings, y, m, d);
+  var t = getTodayInProjectTimezone_();
+  var decision = decideAutoCreateShouldRun(settings, t.year, t.month, t.day);
   if (!decision.shouldRun) return;
   MonthlyWorkbookService.createMonth(decision.targetYear, decision.targetMonth);
 }
@@ -106,11 +146,13 @@ function resolveWorkbookContext_(fileId) {
 
 var MonthlyWorkbookService = {
   /**
-   * Resuelve el fileId de un mes YYYY-MM (Seccion 5): primero el registro (Script Properties,
-   * rapido); si falta o el archivo ya no existe, escanea la carpeta operativa WB y verifica por
-   * METADATA (`_CONFIG.REFERENCE_YEAR/MONTH` del propio archivo candidato), nunca solo por nombre
-   * (Seccion 5: "nunca confiar solo en nombre sin comprobar ID/metadata"). Auto-sana el registro si
-   * lo encuentra asi. Devuelve {found:false} si no existe en ningun lado.
+   * Resuelve el fileId de un mes YYYY-MM (Seccion 5; D24 Seccion 3: ahora vive en WB/<year>/):
+   * primero el registro (Script Properties, rapido); si falta o el archivo ya no existe, escanea la
+   * carpeta ANUAL correspondiente (findYearFolder, null-safe si el anio no existe todavia -- 0
+   * candidatos) y verifica por METADATA (`_CONFIG.REFERENCE_YEAR/MONTH` del propio archivo
+   * candidato), nunca solo por nombre (Seccion 5: "nunca confiar solo en nombre sin comprobar
+   * ID/metadata"). Auto-sana el registro si lo encuentra asi. Devuelve {found:false} si no existe en
+   * ningun lado.
    */
   resolveMonth: function (year, month) {
     var registered = WorkbookRegistry.get(year, month);
@@ -123,8 +165,10 @@ var MonthlyWorkbookService = {
       } catch (e) { /* borrado/inaccesible: cae al escaneo de carpeta */ }
     }
 
-    var folder = DriveApp.getFolderById(WB_KNOWN.SHEET_FOLDER_ID);
-    var it = folder.getFilesByType(MimeType.GOOGLE_SHEETS);
+    var yearFolder = findYearFolder(year);
+    if (!yearFolder) return { found: false };
+
+    var it = yearFolder.getFilesByType(MimeType.GOOGLE_SHEETS);
     while (it.hasNext()) {
       var f = it.next();
       var parsed = parseMonthlyWorkbookName(f.getName());
@@ -144,13 +188,14 @@ var MonthlyWorkbookService = {
   },
 
   /**
-   * Limpia deterministicamente el estado MENSUAL de una copia recien hecha (Seccion 2 de la
-   * mision), preservando estructura/formato/protecciones/Diccionario (heredados intactos de la
-   * copia de Septiembre). NUNCA toca Diccionario. Es la unica funcion de este archivo que muta un
-   * Spreadsheet; se llama exactamente una vez, justo despues de makeCopy(), antes de registrar el
-   * archivo como disponible.
+   * Limpia deterministicamente las hojas OPERACIONALES de un Spreadsheet (RESUMEN/Vuelos/
+   * Cronograma/_PAIRINGS_DATA/_RUNS), preservando estructura/formato/protecciones/Diccionario.
+   * NUNCA toca Diccionario ni _CONFIG. Compartida por dos flujos (D24): `resetMonthlyState_` (mes
+   * recien creado) y la migracion del MAIN (`migrateMainAndSeptember`, que debe dejar al MAIN sin
+   * las 32 asignaciones de Septiembre que traia como archivo original, para que nunca sea un
+   * segundo owner de INS/ACT -- Seccion 2 de la mision D24).
    */
-  resetMonthlyState_: function (ss, year, month, fileId) {
+  clearOperationalSheetData_: function (ss) {
     // RESUMEN: preserva header/formato/validaciones/protecciones; borra SOLO filas de datos.
     var resumen = ss.getSheetByName(SHEET_NAMES.RESUMEN);
     if (resumen && resumen.getLastRow() > 1) {
@@ -182,7 +227,7 @@ var MonthlyWorkbookService = {
     SheetStructure.ensureMinColumns(pairingsData, PAIRINGS_DATA_HEADERS.length);
     pairingsData.getRange(1, 1, 1, PAIRINGS_DATA_HEADERS.length).setValues([PAIRINGS_DATA_HEADERS]);
 
-    // _RUNS: nuevo estado mensual, nunca runs copiados de Septiembre. Mismo motivo que arriba: se
+    // _RUNS: nuevo estado mensual, nunca runs heredados de la plantilla. Mismo motivo que arriba: se
     // reescribe el header directamente en vez de reusar AuditService.ensureHeaders (esa funcion
     // decide "que falta" comparando contra el header YA ESCRITO; tras un clearContents() no hay
     // garantia de que getLastColumn() quede en 0 si la plantilla tenia formato en el header, lo que
@@ -192,12 +237,23 @@ var MonthlyWorkbookService = {
     SheetStructure.ensureMinColumns(runs, RUNS_HEADERS.length);
     runs.getRange(1, 1, 1, RUNS_HEADERS.length).setValues([RUNS_HEADERS]);
 
+    // Diccionario: NUNCA se toca (Seccion 2: se conserva como maestro/copied state).
+  },
+
+  /**
+   * Limpia deterministicamente el estado MENSUAL de una copia recien hecha (Seccion 2 de la
+   * mision), preservando estructura/formato/protecciones/Diccionario (heredados intactos de la
+   * copia del MAIN). NUNCA toca Diccionario. Es la unica funcion de este archivo que muta un
+   * Spreadsheet MONTH; se llama exactamente una vez, justo despues de makeCopy(), antes de registrar
+   * el archivo como disponible.
+   */
+  resetMonthlyState_: function (ss, year, month, fileId) {
+    MonthlyWorkbookService.clearOperationalSheetData_(ss);
+
     // _CONFIG: primero se completa con defaults (por si la plantilla tuviera algo incompleto),
     // LUEGO se pisa con los valores especificos del mes nuevo (nunca al reves: lo especifico gana).
     ConfigService.ensureDefaults(ss);
-    ConfigService.writeValues(ss, buildMonthResetConfigValues(year, month, fileId));
-
-    // Diccionario: NUNCA se toca (Seccion 2: se conserva como maestro/copied state).
+    ConfigService.writeValues(ss, buildMonthResetConfigValues(year, month, fileId, WB_KNOWN.MAIN_FILE_ID));
   },
 
   /**
@@ -231,9 +287,12 @@ var MonthlyWorkbookService = {
         return { created: false, fileId: existing.fileId, url: existing.url, name: name, snapshotStatus: 'UNKNOWN_EXISTING', candidatesCount: null };
       }
 
-      var templateFile = DriveApp.getFileById(WB_KNOWN.EXPECTED_SPREADSHEET_ID);
-      var targetFolder = DriveApp.getFolderById(WB_KNOWN.SHEET_FOLDER_ID);
-      var copy = templateFile.makeCopy(name, targetFolder);
+      // D24 Seccion 3: los mensuales viven en WB/<year>/, nunca directamente en WB/. La plantilla
+      // sigue siendo el MAIN (WB_KNOWN.MAIN_FILE_ID) -- su rol de "template estructural" no cambia,
+      // solo su rol de identidad (D24, nunca vuelve a ser "un mes").
+      var yearFolder = ensureYearFolder(year);
+      var templateFile = DriveApp.getFileById(WB_KNOWN.MAIN_FILE_ID);
+      var copy = templateFile.makeCopy(name, yearFolder);
       fileId = copy.getId();
 
       try {
@@ -283,3 +342,264 @@ var MonthlyWorkbookService = {
     return MonthlyWorkbookService.createMonth(next.year, next.month);
   },
 };
+
+/**
+ * MainWorkbookService (D24, Seccion 5 de la mision "MAIN VIEW STATE"): resuelve que archivo mensual
+ * "ve"/opera el MAIN, a partir de la configuracion CENTRAL (Script Properties: MAIN_VIEW_MODE) y el
+ * registro de meses (WorkbookRegistry). Toda la logica de ranking/decision PURA vive en
+ * 77_WorkbookIdentity.js (rankMainViewCandidates/decideMainViewSettings); este objeto es I/O puro.
+ */
+var MainWorkbookService = {
+  /** Enumera TODOS los meses conocidos por el registro (Script Properties), parseando sus claves. */
+  listRegisteredMonths_: function () {
+    var props = PropertiesService.getScriptProperties().getProperties();
+    var out = [];
+    Object.keys(props).forEach(function (key) {
+      var parsed = parseRegistryPropertyKey(key);
+      if (!parsed) return;
+      out.push({ year: parsed.year, month: parsed.month, monthKey: buildMonthKey(parsed.year, parsed.month), fileId: props[key] });
+    });
+    return out;
+  },
+
+  readViewSettings_: function () {
+    var raw = PropertiesService.getScriptProperties().getProperty(CENTRAL_PROPERTY_KEYS_.MAIN_VIEW_MODE);
+    return decideMainViewSettings({ MAIN_VIEW_MODE: raw });
+  },
+
+  /** Admin: cambia MAIN_VIEW_MODE de forma central (Seccion 5 de la mision: "sin alterar los archivos mensuales"). */
+  writeMainViewMode: function (mode) {
+    var normalized = String(mode || '').trim().toUpperCase();
+    if (normalized !== MAIN_VIEW_MODE.CURRENT_MONTH && normalized !== MAIN_VIEW_MODE.LATEST_CREATED) {
+      throw new Error('MAIN_VIEW_MODE invalido: "' + mode + '". Valores validos: ' + MAIN_VIEW_MODE.CURRENT_MONTH + ', ' + MAIN_VIEW_MODE.LATEST_CREATED + '.');
+    }
+    PropertiesService.getScriptProperties().setProperty(CENTRAL_PROPERTY_KEYS_.MAIN_VIEW_MODE, normalized);
+    return normalized;
+  },
+
+  /**
+   * Verifica FISICAMENTE un candidato del registro (Seccion 3 de la mision: "no confiar solo en
+   * nombre"): abre el archivo, confirma WORKBOOK_ROLE=MONTH, REFERENCE_YEAR/MONTH coincidentes con
+   * lo registrado, y que su carpeta padre sea la carpeta anual correcta. Devuelve {ok:true, ss,
+   * config} o {ok:false, reason}; nunca lanza (un candidato invalido simplemente se descarta).
+   */
+  verifyMonthCandidate_: function (candidate) {
+    var ss;
+    try {
+      ss = SpreadsheetApp.openById(candidate.fileId);
+    } catch (e) {
+      return { ok: false, reason: 'No se pudo abrir el archivo (borrado/inaccesible).' };
+    }
+    var cfg = ConfigService.read(ss).values;
+    if (String(cfg.WORKBOOK_ROLE || '').toUpperCase() !== WORKBOOK_ROLE.MONTH) {
+      return { ok: false, reason: 'WORKBOOK_ROLE no es MONTH.' };
+    }
+    if (String(cfg.REFERENCE_YEAR) !== String(candidate.year) || String(cfg.REFERENCE_MONTH) !== String(candidate.month)) {
+      return { ok: false, reason: 'REFERENCE_YEAR/MONTH no coincide con lo registrado.' };
+    }
+    var yearFolder = findYearFolder(candidate.year);
+    if (!yearFolder) return { ok: false, reason: 'La carpeta del anio ' + candidate.year + ' no existe.' };
+    var parents = DriveApp.getFileById(candidate.fileId).getParents();
+    var inYearFolder = false;
+    while (parents.hasNext()) { if (parents.next().getId() === yearFolder.getId()) inYearFolder = true; }
+    if (!inYearFolder) return { ok: false, reason: 'El archivo no esta dentro de la carpeta del anio ' + candidate.year + '.' };
+    return { ok: true, ss: ss, config: cfg };
+  },
+
+  /**
+   * Resuelve el mensual objetivo del MAIN (Seccion 1/5 de la mision): CURRENT_MONTH por defecto (con
+   * fallback al ultimo mensual valido si el mes calendario actual no existe todavia), o
+   * LATEST_CREATED si asi se configuro centralmente. `forcedMode` (opcional) fuerza un modo puntual
+   * SIN tocar la configuracion central (usado por "Previsualizar ultimo mes creado", Seccion 1: la
+   * previsualizacion nunca altera archivos mensuales NI la configuracion central).
+   */
+  resolveViewTarget: function (forcedMode) {
+    var settings = forcedMode ? { viewMode: forcedMode } : MainWorkbookService.readViewSettings_();
+    var registered = MainWorkbookService.listRegisteredMonths_();
+
+    var t = getTodayInProjectTimezone_();
+
+    var ranked = rankMainViewCandidates(settings, registered, t.year, t.month);
+    if (ranked.length === 0) {
+      throw new Error('Todavia no hay ningun mes operativo creado. Use "Meses > Crear próximo mes" o "Crear mes manualmente" primero.');
+    }
+
+    var currentKey = buildMonthKey(t.year, t.month);
+    for (var i = 0; i < ranked.length; i++) {
+      var candidate = ranked[i];
+      var verified = MainWorkbookService.verifyMonthCandidate_(candidate);
+      if (!verified.ok) continue;
+      var fallbackUsed = settings.viewMode === MAIN_VIEW_MODE.CURRENT_MONTH && candidate.monthKey !== currentKey;
+      var resolution = {
+        mode: settings.viewMode, fileId: candidate.fileId, year: candidate.year, month: candidate.month,
+        monthKey: candidate.monthKey, fallbackUsed: fallbackUsed, ss: verified.ss, config: verified.config,
+      };
+      // Cache informativo, nunca autoritativo (Seccion 5): un fallo al escribirlo no debe bloquear
+      // la resolucion, que ya se calculo por completo arriba.
+      try { PropertiesService.getScriptProperties().setProperty(CENTRAL_PROPERTY_KEYS_.MAIN_VIEW_FILE_ID, candidate.fileId); } catch (e) { /* informativo */ }
+      return resolution;
+    }
+    throw new Error('Hay meses registrados pero ninguno paso la verificacion fisica (archivo movido/corrupto/borrado). Revise Administración > Diagnóstico del sistema.');
+  },
+
+  /**
+   * Punto de entrada UNICO para las acciones de menu de usuario final (Seccion 2 de la mision, "MAIN
+   * COMO VISTA"): dado el Spreadsheet activo/explicito, si es MONTH devuelve su propio contexto
+   * (identico al comportamiento previo a D24); si es MAIN, resuelve el mensual objetivo segun
+   * MAIN_VIEW_MODE y devuelve el contexto de ESE archivo (con `.mainResolution` describiendo la
+   * resolucion), nunca el del MAIN -- asi ninguna accion de calculo puede terminar operando sobre el
+   * MAIN "como si fuera mensual" (Seccion 1). Para forzar LATEST_CREATED puntualmente sin pasar por
+   * MAIN_VIEW_MODE (p.ej. "Previsualizar último mes creado"), usar `resolveViewTarget` directamente.
+   */
+  resolveContext: function (ss) {
+    var ctx = Orchestrator.loadContext(ss);
+    if (ctx.config.WORKBOOK_ROLE !== WORKBOOK_ROLE.MAIN) {
+      ctx.mainResolution = null;
+      return ctx;
+    }
+    var resolution = MainWorkbookService.resolveViewTarget();
+    var targetCtx = Orchestrator.loadContext(resolution.ss);
+    targetCtx.mainResolution = resolution;
+    return targetCtx;
+  },
+};
+
+// -------------------------------------------------------------------------------------------
+// Migracion estructural UNICA (D24, Seccion 4 de la mision): conocidos de ESTE evento historico
+// puntual, NO parametros genericos reutilizables para otra migracion futura.
+// -------------------------------------------------------------------------------------------
+var MIGRATION_SEPTEMBER_YEAR_ = 2026;
+var MIGRATION_SEPTEMBER_MONTH_ = 9;
+var MIGRATION_OCTOBER_FILE_ID_ = '1vUV7H5Xd95jIn_gu8cWr-DQ-P-sEnCM3I-zUbt86DhM';
+var MIGRATION_OCTOBER_YEAR_ = 2026;
+var MIGRATION_OCTOBER_MONTH_ = 10;
+
+/**
+ * Huella de una fila de RESUMEN para verificar la copia de Septiembre (Seccion 4 de la mision:
+ * "nunca perder contenido antes de verificar"). Cubre exactamente los campos HUMANOS/identidad que
+ * importa preservar bit a bit (assignment_id, INS, ACT, Pairing) -- deliberadamente MAS estricta que
+ * comparar solo la CANTIDAD de filas, que no detectaria una copia con el mismo total pero contenido
+ * distinto.
+ */
+function fingerprintResumenRow_(r) {
+  return String(r.assignment_id) + '|' + String(r.INS) + '|' + String(r.ACT) + '|' + String(r.Pairing);
+}
+
+/** Compara dos listas de filas de RESUMEN por contenido (no por orden): true si son EXACTAMENTE el mismo conjunto. */
+function resumenRowsMatchExactly_(rowsA, rowsB) {
+  if (rowsA.length !== rowsB.length) return false;
+  var a = rowsA.map(fingerprintResumenRow_).sort();
+  var b = rowsB.map(fingerprintResumenRow_).sort();
+  for (var i = 0; i < a.length; i++) { if (a[i] !== b[i]) return false; }
+  return true;
+}
+
+/**
+ * Migracion estructural UNICA (D24, Seccion 4 de la mision): "MAIN permanente + archivos mensuales
+ * por anio". Restart-safe e idempotente en cada paso (A/B/C se auto-verifican antes de actuar: un
+ * reintento tras una falla parcial nunca duplica nada). Ejecutar UNA SOLA VEZ, manualmente, desde el
+ * editor de Apps Script (misma exigencia de autorizacion OAuth interactiva de D2).
+ *
+ * A. Si NO existe ya un mensual valido de Septiembre 2026 (MonthlyWorkbookService.resolveMonth),
+ *    copia el MAIN (con su contenido actual: 32 asignaciones/INS/ACT/_PAIRINGS_DATA/_RUNS) a
+ *    WB/2026/Pairings WB - SEPTIEMBRE 2026, le fuerza su identidad MONTH (nunca via self-heal: el
+ *    MAIN ya tenia MONTH_FILE_ID=su-propio-ID por D23 auto-sanandolo cuando operaba como
+ *    Septiembre, y ese valor STALE se copiaria tal cual -- debe sobrescribirse explicitamente, no
+ *    dejarse al self-heal de loadContext, que lo veria como MISMATCH), y verifica que la copia
+ *    conservo EXACTAMENTE el mismo contenido (assignment_id/INS/ACT/Pairing por fila, no solo la
+ *    cantidad) que el MAIN tenia antes de tocarlo (Seccion 4: "nunca perder contenido antes de
+ *    verificar la copia mensual de septiembre").
+ * B. Mueve (no copia) el archivo de Octubre existente a WB/2026/, sin cambiar su ID ni resetearlo;
+ *    su identidad ya es consistente (creada por `createMonth`), asi que `Orchestrator.loadContext`
+ *    basta para auto-sanar WORKBOOK_ROLE/MAIN_FILE_ID (ambos ausentes hasta ahora, sin conflicto).
+ * C. Restaura el MAIN: `Orchestrator.loadContext` auto-asigna WORKBOOK_ROLE=MAIN (su ID coincide con
+ *    WB_KNOWN.MAIN_FILE_ID) y renombra a "Pairings WB"; luego limpia sus propias hojas operacionales
+ *    (ya copiadas a salvo en el paso A) para que nunca vuelva a ser un segundo owner de INS/ACT.
+ */
+function migrateMainAndSeptember() {
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(30000)) {
+    throw new Error('Ya hay una migracion u otra operacion de Pairings WB en curso. Intente nuevamente en unos minutos.');
+  }
+  var log = [];
+  try {
+    var mainId = WB_KNOWN.MAIN_FILE_ID;
+    var mainSs = SpreadsheetApp.openById(mainId);
+
+    // --- A. Septiembre: copia mensual, SOLO si no existe ya una valida. ---------------------
+    var septResolved = MonthlyWorkbookService.resolveMonth(MIGRATION_SEPTEMBER_YEAR_, MIGRATION_SEPTEMBER_MONTH_);
+    var septFileId;
+    if (septResolved.found) {
+      septFileId = septResolved.fileId;
+      log.push('Paso A: Septiembre 2026 ya existia como mensual valido (' + septFileId + '); no se duplico.');
+    } else {
+      var mainRowsBefore = SheetStructure.readResumenRows(mainSs).rows;
+      var yearFolderForSept = ensureYearFolder(MIGRATION_SEPTEMBER_YEAR_);
+      var septName = buildMonthlyWorkbookName(MIGRATION_SEPTEMBER_YEAR_, MIGRATION_SEPTEMBER_MONTH_);
+      var septCopyFile = DriveApp.getFileById(mainId).makeCopy(septName, yearFolderForSept);
+      septFileId = septCopyFile.getId();
+
+      try {
+        var septSs = SpreadsheetApp.openById(septFileId);
+        var septRowsAfter = SheetStructure.readResumenRows(septSs).rows;
+        // Verificacion de CONTENIDO (assignment_id/INS/ACT/Pairing), no solo de cantidad: una copia
+        // con el mismo total de filas pero contenido distinto tambien debe abortar antes de tocar
+        // el MAIN (Seccion 4: "nunca perder contenido antes de verificar la copia").
+        if (!resumenRowsMatchExactly_(mainRowsBefore, septRowsAfter)) {
+          throw new Error('La copia de Septiembre (' + septRowsAfter.length + ' asignaciones) no coincide exactamente ' +
+            'con el contenido del MAIN antes de copiar (' + mainRowsBefore.length + ' asignaciones). Abortando sin tocar el MAIN.');
+        }
+        ConfigService.ensureDefaults(septSs);
+        ConfigService.writeValues(septSs, {
+          WORKBOOK_ROLE: WORKBOOK_ROLE.MONTH,
+          MAIN_FILE_ID: mainId,
+          MONTH_FILE_ID: septFileId,
+          REFERENCE_YEAR: String(MIGRATION_SEPTEMBER_YEAR_),
+          REFERENCE_MONTH: String(MIGRATION_SEPTEMBER_MONTH_),
+        });
+        WorkbookRegistry.set(MIGRATION_SEPTEMBER_YEAR_, MIGRATION_SEPTEMBER_MONTH_, septFileId);
+        ensureOpenTriggerForSpreadsheet(septFileId);
+        log.push('Paso A: Septiembre 2026 creado como mensual (' + septFileId + '), ' + septRowsAfter.length + ' asignaciones verificadas por contenido exacto contra el MAIN.');
+      } catch (septError) {
+        try { septCopyFile.setTrashed(true); } catch (cleanupError) { /* mejor esfuerzo: si ni el trash funciona, queda un archivo huerfano para revision manual */ }
+        throw new Error('No se pudo inicializar la copia mensual de Septiembre (se revirtio la copia parcial): ' + septError.message);
+      }
+    }
+
+    // --- B. Octubre: mover (no copiar) a la carpeta del anio. --------------------------------
+    var yearFolderForOct = ensureYearFolder(MIGRATION_OCTOBER_YEAR_);
+    var octFile = DriveApp.getFileById(MIGRATION_OCTOBER_FILE_ID_);
+    var octParents = octFile.getParents();
+    var alreadyInYearFolder = false;
+    var otherParents = [];
+    while (octParents.hasNext()) {
+      var p = octParents.next();
+      if (p.getId() === yearFolderForOct.getId()) alreadyInYearFolder = true;
+      else otherParents.push(p);
+    }
+    if (!alreadyInYearFolder) {
+      yearFolderForOct.addFile(octFile);
+      otherParents.forEach(function (parentFolder) { parentFolder.removeFile(octFile); });
+      log.push('Paso B: Octubre 2026 (' + MIGRATION_OCTOBER_FILE_ID_ + ') movido a la carpeta ' + MIGRATION_OCTOBER_YEAR_ + '.');
+    } else {
+      log.push('Paso B: Octubre 2026 ya estaba en la carpeta del anio; no se movio.');
+    }
+    // Identidad de Octubre ya es consistente (creado por createMonth): loadContext solo auto-sana
+    // WORKBOOK_ROLE/MAIN_FILE_ID, ambos ausentes hasta ahora -- nunca un MISMATCH aqui.
+    Orchestrator.loadContext(SpreadsheetApp.openById(MIGRATION_OCTOBER_FILE_ID_));
+    WorkbookRegistry.set(MIGRATION_OCTOBER_YEAR_, MIGRATION_OCTOBER_MONTH_, MIGRATION_OCTOBER_FILE_ID_);
+    ensureOpenTriggerForSpreadsheet(MIGRATION_OCTOBER_FILE_ID_);
+
+    // --- C. Restaurar el MAIN. ----------------------------------------------------------------
+    Orchestrator.loadContext(mainSs); // auto-asigna WORKBOOK_ROLE=MAIN, MAIN_FILE_ID=propio ID, renombra a "Pairings WB"
+    MonthlyWorkbookService.clearOperationalSheetData_(mainSs); // ya copiado a salvo en el paso A
+    log.push('Paso C: MAIN restaurado (WORKBOOK_ROLE=MAIN, título="' + mainSs.getName() + '"), hojas operacionales limpiadas.');
+
+    return {
+      log: log, mainFileId: mainId, septemberFileId: septFileId,
+      octoberFileId: MIGRATION_OCTOBER_FILE_ID_, yearFolderId: yearFolderForOct.getId(),
+    };
+  } finally {
+    lock.releaseLock();
+  }
+}
