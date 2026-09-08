@@ -21,12 +21,8 @@ referencia "Pairings WB SEPTIEMBRE-2026 - Vuelos"):
      sea <=2) y el rango entre el mínimo y el máximo no puede superar 2
      (máx. 3 días de duty seguidos).
   5. Solo se incluyen pairings cuyas piernas sean las rutas de
-     entrenamiento: LIM-MIA / MIA-LIM (B767, round-trip de 3 días) o
+     entrenamiento: LIM-MIA / MIA-LIM (round-trip de 3 días) o
      LIM-SCL / SCL-LIM (vuelta el mismo día) -> ver ALLOWED_ROUTES.
-     En LIM-SCL/SCL-LIM se filtra además por número de vuelo
-     (ALLOWED_FLIGHTS) porque conviven 2 flotas con vuelo propio:
-     B767 (763) = 2413/2412, B787-8/-9 (788/789) = 2697/2696
-     (confirmado por Antonella Cotrina, LATAM, 2026-09).
 
 Notas de casos NO resueltos por reglas (quedan 3 diferencias contra
 la referencia de 25 pairings, validado con
@@ -65,7 +61,7 @@ from openpyxl.comments import Comment
 # Configuración
 # ----------------------------------------------------------------------
 SRC = r"Panel pairing_Base reporte pairing_Tabla (5).csv" # r"Panel pairing_Base reporte pairing_Tabla (6) (1).csv"
-OUT = r"Reporte_pairings_WB_b787_b767_OCT_2026.xlsx"
+OUT = r"Reporte_pairings_WB_OCT_2026.xlsx"
 MES_OBJETIVO = 10    # mes del reporte (1-12) -> cambiar junto con SRC/OUT cada corrida
 ANIO_OBJETIVO = 2026  # año del reporte
 BLANK_ROWS = 2  # filas en blanco entre un bloque (pairing) y el siguiente
@@ -87,14 +83,11 @@ ALLOWED_ROUTES = {
     ("LIM", "MIA"), ("MIA", "LIM"),   # round-trip de 3 días
     ("LIM", "SCL"), ("SCL", "LIM"),   # vuelta el mismo día
 }
-# En LIM-SCL/SCL-LIM conviven dos flotas con vuelos de entrenamiento propios:
-#   - B767 (sub_fleet 763): vuelos 2413/2412 (los únicos que solo operan jue/vie).
-#   - B787-8/-9 (sub_fleet 788/789): vuelos 2697/2696, confirmados por Antonella
-#     Cotrina (LATAM) el 2026-09 para incorporar los pairings de B787.
-# Para MIA se permiten los vuelos que aparecen en el roster de referencia (B767).
-# Verificado contra los datos: 2697/2696 SIEMPRE son 788/789, nunca se mezclan
-# con la 763, así que no hay riesgo de colisión al dejarlos en un solo set.
-ALLOWED_FLIGHTS = {2480, 2481, 2695, 2694, 2698, 2699, 2413, 2412, 2697, 2696}
+# LIM-SCL/SCL-LIM tiene un vuelo diario regular (2697/2696) que NO es el
+# de entrenamiento; el de entrenamiento es específicamente 2413/2412
+# (el único que solo opera jue/vie). Para MIA se permiten los vuelos que
+# aparecen en el roster de referencia.
+ALLOWED_FLIGHTS = {2480, 2481, 2695, 2694, 2698, 2699, 2413, 2412}
 
 # Encabezados finales, hasta la columna N (B..N en la plantilla)
 HEADERS = ["Pairing ID", "FECHA REAL", "MES", "Day of Week", "Flight No",
@@ -126,33 +119,25 @@ def cargar_y_filtrar(csv_path: str, mes_objetivo: int = MES_OBJETIVO,
     df["wd_pres"] = df["presentacion_duty_date_lt_dt"].dt.day_name()
     df["dia_semana"] = df["wd_vuelo"].map(WD_ES)
 
-    # El número de "trip" NO es único: en algunos exports (verificado en el
-    # de octubre) se reutiliza el mismo número para pairings distintos de
-    # otra fecha/flota (245 casos). "fecha_inicio_trip" sí es constante
-    # dentro de un mismo pairing real, así que la llave de agrupación es
-    # trip + fecha_inicio_trip. "Pairing ID" en el reporte sigue mostrando
-    # el número de trip tal cual, solo se usa "_pk" para agrupar piernas.
-    df["_pk"] = df["trip"].astype(str) + "|" + df["fecha_inicio_trip"].astype(str)
-
     # Validez a nivel de pierna (leg)
     df["leg_dia_ok"] = df["wd_vuelo"].isin(DIAS_OK)
     df["leg_pres_ok"] = df["wd_pres"] != "Sunday"
     df["leg_ruta_ok"] = list(zip(df["dep"], df["arr"]))
     df["leg_ruta_ok"] = df["leg_ruta_ok"].isin(ALLOWED_ROUTES) & df["vuelo"].isin(ALLOWED_FLIGHTS)
 
-    # Validez a nivel de pairing completo (agrupado por _pk)
-    g = df.groupby("_pk")
+    # Validez a nivel de trip completo
+    g = df.groupby("trip")
     trip_dia_ok = g["leg_dia_ok"].transform("all")
     trip_pres_ok = g["leg_pres_ok"].transform("all")
 
-    # El pairing "empieza" en el mes/año objetivo si su pierna de menor dia_duty
+    # El trip "empieza" en el mes/año objetivo si su pierna de menor dia_duty
     # cae en ese mes (la última pierna puede pasarse al mes siguiente).
     idx_primera_pierna = g["dia_duty"].idxmin()
-    primeras_piernas = df.loc[idx_primera_pierna, ["_pk", "inicio_vuelo_lt_dt"]]
+    primeras_piernas = df.loc[idx_primera_pierna, ["trip", "inicio_vuelo_lt_dt"]]
     primeras_piernas["mes_ok"] = (primeras_piernas["inicio_vuelo_lt_dt"].dt.month == mes_objetivo) & \
                                   (primeras_piernas["inicio_vuelo_lt_dt"].dt.year == anio_objetivo)
-    mapa_mes_ok = primeras_piernas.set_index("_pk")["mes_ok"]
-    trip_mes_ok = df["_pk"].map(mapa_mes_ok)
+    mapa_mes_ok = primeras_piernas.set_index("trip")["mes_ok"]
+    trip_mes_ok = df["trip"].map(mapa_mes_ok)
     trip_ruta_ok = g["leg_ruta_ok"].transform("all")
 
     def dia_duty_contiguo_y_corto(s):
@@ -186,7 +171,7 @@ def cargar_y_filtrar(csv_path: str, mes_objetivo: int = MES_OBJETIVO,
         "dia_duty": "DIA_DUTY",
     })
 
-    return validos.sort_values(["_pk", "DIA_DUTY"])[HEADERS + ["_pk"]]
+    return validos.sort_values(["Pairing ID", "DIA_DUTY"])[HEADERS]
 
 
 def construir_reporte_bloques(validos: pd.DataFrame, out_path: str, blank_rows: int = 1):
@@ -244,12 +229,12 @@ def construir_reporte_bloques(validos: pd.DataFrame, out_path: str, blank_rows: 
 
     fila = 5  # header_row del primer bloque (su pre_row es la fila 4, de arriba)
 
-    for pairing_key, grupo in validos.groupby("_pk", sort=False):
+    for pairing_id, grupo in validos.groupby("Pairing ID", sort=False):
         piernas = [row for _, row in grupo.iterrows()]
         if len(piernas) != 2:
             # el layout de 6 filas de Q asume exactamente 2 piernas (ida y vuelta);
             # si algún día hay pairings de 1 o 3 piernas, hay que revisar esto.
-            raise ValueError(f"Pairing {pairing_key} tiene {len(piernas)} piernas, se esperaban 2")
+            raise ValueError(f"Pairing {pairing_id} tiene {len(piernas)} piernas, se esperaban 2")
 
         pre_row = fila - 1
         header_row = fila
@@ -346,6 +331,6 @@ def construir_reporte_bloques(validos: pd.DataFrame, out_path: str, blank_rows: 
 if __name__ == "__main__":
     validos = cargar_y_filtrar(SRC)
     construir_reporte_bloques(validos, OUT, blank_rows=BLANK_ROWS)
-    print(f"Pairings válidos: {validos['_pk'].nunique()}")  # _pk = trip+fecha_inicio_trip (el trip solo puede repetirse)
+    print(f"Pairings válidos: {validos['Pairing ID'].nunique()}")
     print(f"Filas de vuelo: {len(validos)}")
     print(f"Archivo generado: {OUT}")
