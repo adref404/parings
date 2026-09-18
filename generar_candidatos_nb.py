@@ -58,9 +58,9 @@ from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 # ----------------------------------------------------------------------
 # Configuración
 # ----------------------------------------------------------------------
-SRC = r"Panel pairing_Base reporte pairing_Tabla_NB_319_320.csv"
-OUT = r"Candidatos_NB_LCK_OCT_2026_v2.xlsx"
-MES_OBJETIVO = 10
+SRC = r"Panel pairing_Base reporte pairing_Tabla (7).csv"
+OUT = r"Candidatos_NB_LCK_SET_2026_v3.xlsx"
+MES_OBJETIVO = 9
 ANIO_OBJETIVO = 2026
 
 # Exclusiones dinámicas del mes (2.11: "la lista es dinámica, revalidar
@@ -186,6 +186,14 @@ def armar_primeras_mitades(df: pd.DataFrame, dia_duty_min_real: pd.Series | None
         if len(dia1) < 2:
             excluidos_rows.append({"trip": trip, "motivo": "día 1 sin vuelta el mismo día (1 solo tramo)"})
             continue
+
+        # Indicación del usuario: si el día 1 trae 6, 8 o 10 tramos (3, 4
+        # o 5 idas+vueltas seguidas), es demasiado para un solo instructor
+        # -> se descarta el trip completo (no solo los primeros 2 tramos).
+        if len(dia1) in (6, 8, 10):
+            excluidos_rows.append({"trip": trip, "motivo": f"día 1 tiene {len(dia1)} tramos -> no se toma"})
+            continue
+
         ida, vuelta = dia1.iloc[0], dia1.iloc[1]
         if ida["dep"] != "LIM":
             excluidos_rows.append({"trip": trip, "motivo": "el primer tramo no sale de LIM"})

@@ -54,7 +54,7 @@ from generar_candidatos_nb import (
 )
 
 # ----------------------------------------------------------------------
-OUT = r"Pairings_NB_OCT_2026_fix.xlsx"
+OUT = r"Pairings_NB_SET_2026_v3.xlsx"
 N_MUESTRA = None   # número de BLOQUES (no candidatos) de muestra; None = todos
 
 # Grid EXACTO de las 4 filas de reglas (fila, columna, texto, es_rojo),
