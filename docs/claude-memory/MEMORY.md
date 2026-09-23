@@ -1,0 +1,3 @@
+- [Pairings project overview](project_pairings_overview.md) — what the LATAM Freeze/LCK automation is, key scripts, current state
+- [QA rigor expected](feedback_qa_rigor_pairings.md) — Fernando wants recompute-and-compare QA, not structural review, before confirming correctness
+- [Manual & rule sources](reference_pairings_manual.md) — where business rules come from (manual .docx vs video vs chat confirmations)
