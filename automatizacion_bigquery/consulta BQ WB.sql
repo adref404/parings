@@ -21,7 +21,7 @@ SELECT
 FROM `operations-data-prod.carmen_gold.crew_pairing_carmen_system`
 
 WHERE
-  flight_start_date_local_time BETWEEN DATE '2025-09-01' AND DATE '2026-09-30'
+  flight_start_date_local_time BETWEEN DATE '2026-09-01' AND DATE '2026-09-30'
   AND subsidiary_code IN ('LP')
   AND load_type_code = 'FP'
   AND crew_range_type_code = 'SAB'
