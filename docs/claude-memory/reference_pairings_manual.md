@@ -5,7 +5,7 @@ metadata:
   node_type: memory
   type: reference
   originSessionId: ac08facc-2c51-4558-85a4-59dc0ce883ad
-  modified: 2026-09-22T19:15:29.787Z
+  modified: 2026-09-24T00:00:00.000Z
 ---
 
 The authoritative source for Line Check (LCK) scheduling rules is **"Manual Traspaso FREEZE LP.docx"** in the project root — specifically "Parte 2. Line Check A320" (sections 2.1 through 2.21), which documents the full manual process from determining who needs a Line Check through building the Pairings NB/WB files and loading the Freeze.
@@ -15,7 +15,8 @@ It's a .docx (binary) — the Read tool can't open it directly; extract text via
 Some rule details are NOT in this manual and came from other sources during the conversation — track these separately since they might need periodic reconfirmation:
 - The exact NB valid-destination list (AQP/CIX/CJA/CUZ/IQT/PCL/PEM/PIU/TPP) came from a training video Fernando has access to, and overrides the manual's own stated exclusion list (which would exclude IQT and include TCQ/TYL/TBP).
 - WB's exact flight numbers (2480/2481/2695/2694/2698/2699 for MIA, 2413/2412 for B767-SCL, 2697/2696 for B787-SCL) were reverse-engineered against a real reference roster file, then partly confirmed by a LATAM contact (Antonella Cotrina) via chat screenshot for the B787 flights.
-- The Instructores catalog (name/BP/legal-name) and instructor-group assignments (Grupo 1/2/3) were given directly by Fernando, not derived from any file.
+- The Instructores catalog (name/BP/legal-name, 21-22 people) was given directly by Fernando, not derived from any file.
+- **Instructor-group assignments (Grupo 1/2/3/4) are NOT fixed** — despite being documented once in the flowchart video (Grupo 1: Fio-Sebas-Cris, etc.), Fernando confirmed mid-project the real composition already changed and is not reliable as a hardcoded constant. As of 2026-09-24 the groups live in 4 editable cells in Archivo 10 ("LCK 320" sheet, `AD2`/`AE2`/`AF2`/`AG2`, comma-separated names) that Fernando maintains by hand each month — any automation must read them live, never hardcode a snapshot. See [[project-pairings-overview]] for how the notebooks consume this.
 
 See [[project-pairings-overview]] for how these feed into the scripts.
 
