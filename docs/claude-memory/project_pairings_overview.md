@@ -54,6 +54,78 @@ Originally flagged as "can't automate, needs REVA history not confirmed in BigQu
 
 **QA discipline used throughout (see [[feedback-qa-rigor-pairings]]):** every notebook cell was extracted and executed against synthetic mock data (`FakeWS`/`FakeGC`/`FakeBQClient` classes simulating gspread/BigQuery) before being handed to Fernando, and re-validated against his *real* pasted data (messy Y-column examples, real group composition) whenever he reported something that didn't match the synthetic assumptions.
 
+## WB pipeline (B767 + B787, built 2026-09-24) — parallel to the NB pipeline above
+
+Fernando asked to replicate the same automation for WB (wide body): **B767** and **B787** are
+two separate processes (run the same parameterized notebook twice, once per `FLOTA_WB`), not
+one combined flow. Three notebooks built so far, mirroring the NB ones but parameterized by
+`FLOTA_WB = "767"` or `"787"` at the top of each:
+
+1. **`Automatizacion_WB_Fase1_2_Demanda_Instructores.ipynb`** — demanda (Archivo 9, same file
+   as NB's, tabs "LCK 767"/"LCK 787") + instructores IDE (Rol Instructores, same file as NB,
+   columns `IDE B767`/`IDE B787` instead of `IDE A320`) + round-robin reservation in the
+   **same Matriz tab as NB** (WB instructors occupy new rows there, added by hand like NB's
+   were). Reserves only 1 Matriz cell per bloque (día de ida) — see the B767-MIA caveat below.
+2. **`Automatizacion_WB_Fase3_Asignacion_Instructor_Vuelos.ipynb`** — queries BigQuery for both
+   WB subfleets together (763, 788, 789), reuses `generar_reporte_pairings.py`'s validated
+   filtering logic (route/flight-number/day-of-week/dia_duty rules) ported to read ISO dates
+   directly from BigQuery instead of the original CSV's Spanish-text dates. Matches Matriz
+   reservations to real pairings and produces a downloadable Excel (Pairings + Resumen Final).
+   **Fixed a real bug**: `consulta BQ WB.sql` had `subfleet_code IN ('762', '788', '789')` —
+   `'762'` is a typo, corrected to `'763'` (B767's real subfleet code, per
+   `generar_reporte_pairings.py`'s own comments).
+3. **`Automatizacion_WB_Fase4_Consolidacion.ipynb`** — rebuilds the same pairings+matching, then
+   (each behind its own preview-then-uncomment gate) writes the real vuelo text into the Matriz
+   (replacing the placeholder) and writes the CUADRO FINAL into Archivo 10 (tabs "prueba de LCK
+   767"/"prueba de LCK 787", same file as NB's Archivo 10). **CUADRO FINAL columns are found by
+   header name, not fixed position** — confirmed the two WB tabs have different column orders
+   (767: fecha/día/ruta/vuelo/cupo/INS/Grupo at AO-AU; 787: Fecha/DíaSEM/Vuelo/Ruta/N°Cupos/
+   Grupos/INS at AP-AV) — the same header-search-by-content pattern already used for Archivo 9
+   generalizes to this.
+
+### Key structural difference from NB (not invented — from `generar_reporte_pairings.py`)
+
+In WB, **1 "bloque" = 1 pairing** (already ida+vuelta), not 2 pairings combined like NB. A
+LIM-SCL-LIM pairing returns same-day (like NB); a LIM-MIA-LIM pairing returns on a *different*
+calendar day (multi-day trip). B767 flies both routes (route + flight number decide which);
+B787 only flies the SCL route.
+
+### The B767-MIA "two Matriz cells" resolution (confirmed 2026-09-24, resolved across notebooks)
+
+Fernando confirmed a LIM-MIA-LIM pairing must mark **both** days (ida and vuelta) in the
+Matriz for the instructor. But the exact gap between those dates varies per real pairing and
+isn't knowable at the generic round-robin stage (Fase 1/2, before any real flight search) —
+and B767 also flies same-day SCL trips, so a reserved slot might not even turn out to be MIA.
+Resolution: Fase 1/2 reserves only 1 cell (día de ida); Fase 3 detects (and reports) when the
+matched real pairing's vuelta date differs from ida; Fase 4 is the one that actually writes the
+second Matriz cell, once the real date is known. The text written to that second cell is
+currently the same full pairing text as the first cell — flagged as an assumption to confirm,
+not a stated rule.
+
+### Cupos per flota WB (confirmed from the manual, 2026-09-24)
+
+"Dotación por flota" (manual, reglas transversales): A320 = 4 cupos, A319 = 3 (already used by
+NB); **B767 = 1 TJ + 4 TC (5 cupos)**; **B787 = 6 tripulantes/vuelo (6 cupos)**. Used for
+`CAPACIDAD_TC_POR_BLOQUE` (Fase 1/2 sizing, extending NB's "×2 legs" pattern — this extension
+itself is NOT a confirmed rule, flagged in the notebook) and for the CUADRO FINAL "Cupos"
+column in Fase 4.
+
+### Still open for WB — needs more info before it can be built (sin inventar nada)
+
+- **Freeze destination for WB**: confirmed it's the same "202609 Freeze LP" file, tabs
+  "LCK 767"/"LCK B787" (same file NB's Freeze doc mentions), but the exact link/`gid` for those
+  tabs hasn't been given yet — needed before the roster + alternate-CUADRO-FINAL "dos tablas"
+  write (Fase 5 equivalent) can be built.
+- **"INS F a considerar"/"Grupo" per-tripulante (Y→Z/AA equivalent) for WB**: a screenshot of
+  "prueba de LCK 787" shows group definitions as `"Grupo 1"`/`"Karla y Cris"`/`"Grupo 2"`/
+  `"Sebas"`/`"Grupo 3"`/`"Fio"` laid out as alternating label/value pairs in one row (around
+  columns AQ-AV) — a different shape than NB's one-cell-per-group (`AD2`/`AE2`/`AF2`/`AG2`).
+  Exact cell references and the equivalent of NB's "INS FINAL" column for WB tripulantes are
+  not confirmed yet.
+- Fernando also confirmed (like NB) that WB group composition varies month to month — whatever
+  cell layout gets confirmed must be read live, never hardcoded, same principle as
+  [[reference-pairings-manual]]'s NB note.
+
 ## Older BigQuery migration notes (2026-09-22/23, still relevant)
 
 `crew_pairing_carmen_system` field mapping and the `dia_duty`/`bandera_ultima_carga`/`presentacion_duty_date_lt` findings are unchanged — see [[reference-pairings-manual]] for the full table. `pairing_id` reuse across unrelated pairings (needed a synthetic instance key via `dia_duty` regression detection) is also unchanged and is copied into every Colab notebook that touches NB bloques.
