@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <base target="_top">
+  <style>
+    body { font-family: Arial, sans-serif; max-width: 480px; margin: 40px auto; color: #222; }
+    h2 { margin-bottom: 4px; }
+    .sub { color: #666; font-size: 13px; margin-bottom: 24px; }
+    label { display: block; font-weight: bold; margin: 16px 0 6px; }
+    select, button { font-size: 15px; padding: 8px; width: 100%; box-sizing: border-box; }
+    button { margin-top: 24px; background: #1a73e8; color: white; border: none; border-radius: 4px; cursor: pointer; padding: 10px; }
+    button:disabled { background: #aaa; cursor: default; }
+    #estado { margin-top: 20px; font-size: 14px; }
+    #estado a { color: #1a73e8; font-weight: bold; }
+    .error { color: #c5221f; }
+  </style>
+</head>
+<body>
+  <h2>Generar Pairings</h2>
+  <div class="sub">Arma el formato de "Vuelos" + "Resumen" (sin asignar instructor) en un Google Sheet nuevo.</div>
+
+  <label for="mes">Mes</label>
+  <select id="mes">
+    <option value="10">Octubre 2026</option>
+    <option value="11">Noviembre 2026</option>
+    <option value="12">Diciembre 2026</option>
+  </select>
+
+  <label for="flota">Flota</label>
+  <select id="flota">
+    <option value="320">A320 / A319 (Narrow Body)</option>
+    <option value="767">B767 (Wide Body)</option>
+    <option value="787">B787 (Wide Body)</option>
+  </select>
+
+  <button id="btnGenerar" onclick="generar()">Generar</button>
+
+  <div id="estado"></div>
+
+  <script>
+    function generar() {
+      var boton = document.getElementById('btnGenerar');
+      var estado = document.getElementById('estado');
+      boton.disabled = true;
+      estado.innerHTML = 'Generando, esto puede tardar uno o dos minutos (está consultando BigQuery)...';
+
+      var mes = document.getElementById('mes').value;
+      var flota = document.getElementById('flota').value;
+
+      google.script.run
+        .withSuccessHandler(function (url) {
+          boton.disabled = false;
+          estado.innerHTML = 'Listo. <a href="' + url + '" target="_blank">Abrir el Google Sheet generado</a>';
+        })
+        .withFailureHandler(function (err) {
+          boton.disabled = false;
+          estado.innerHTML = '<span class="error">Error: ' + err.message + '</span>';
+        })
+        .generarPairingsWebApp(mes, flota);
+    }
+  </script>
+</body>
+</html>
