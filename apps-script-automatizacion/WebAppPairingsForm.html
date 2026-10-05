@@ -3,61 +3,320 @@
 <head>
   <base target="_top">
   <style>
-    body { font-family: Arial, sans-serif; max-width: 480px; margin: 40px auto; color: #222; }
+    body { font-family: Arial, sans-serif; max-width: 100%; margin: 24px; color: #222; }
+    .panel { max-width: 560px; }
     h2 { margin-bottom: 4px; }
-    .sub { color: #666; font-size: 13px; margin-bottom: 24px; }
-    label { display: block; font-weight: bold; margin: 16px 0 6px; }
-    select, button { font-size: 15px; padding: 8px; width: 100%; box-sizing: border-box; }
-    button { margin-top: 24px; background: #1a73e8; color: white; border: none; border-radius: 4px; cursor: pointer; padding: 10px; }
-    button:disabled { background: #aaa; cursor: default; }
-    #estado { margin-top: 20px; font-size: 14px; }
-    #estado a { color: #1a73e8; font-weight: bold; }
+    .sub { color: #666; font-size: 13px; margin-bottom: 20px; }
+    label.campo { display: block; font-weight: bold; margin: 18px 0 6px; }
+    select { font-size: 15px; padding: 8px; width: 100%; box-sizing: border-box; }
+    button { font-size: 15px; padding: 10px 16px; border: none; border-radius: 4px; cursor: pointer; margin-top: 10px; }
+    button:disabled { background: #aaa !important; cursor: default; }
+    #btnBase { background: #34a853; color: white; }
+    #btnCandidatos { background: #fbbc04; color: #222; }
+    #btnGenerar { background: #1a73e8; color: white; }
+    .paso { margin-top: 10px; }
+    #estadoBase, #estadoCandidatos, #estadoGenerar { margin-top: 10px; font-size: 14px; }
+    #estadoBase a, #estadoCandidatos a, #estadoGenerar a { color: #1a73e8; font-weight: bold; }
     .error { color: #c5221f; }
+    .aviso { color: #b06000; font-size: 13px; }
+    .resultWrap { margin-top: 18px; }
+    .meta { font-size: 13px; color: #555; margin-bottom: 8px; }
+    .tabla-scroll { max-height: 420px; overflow: auto; border: 1px solid #ddd; border-radius: 4px; }
+    table { border-collapse: collapse; width: 100%; font-size: 12px; white-space: nowrap; }
+    th, td { border: 1px solid #e0e0e0; padding: 4px 8px; text-align: left; }
+    th { background: #f1f3f4; position: sticky; top: 0; }
+    tr:nth-child(even) { background: #fafafa; }
+    hr { margin: 28px 0; border: none; border-top: 2px solid #eee; }
+    .checkboxes { display: flex; flex-wrap: wrap; gap: 4px 16px; background: #f8f9fa; padding: 10px 14px; border-radius: 6px; }
+    .checkboxes label { display: inline-flex; align-items: center; gap: 4px; font-weight: normal; margin: 4px 0; white-space: nowrap; }
+    .checkboxes label.oculto { display: none; }
+    .checkboxes input { margin: 0; }
+    .checkboxes .cuenta { color: #888; font-size: 11px; }
+    .toggleLinks { font-size: 12px; margin-top: 4px; }
+    .toggleLinks a { color: #1a73e8; cursor: pointer; margin-right: 10px; }
   </style>
 </head>
 <body>
-  <h2>Generar Pairings</h2>
-  <div class="sub">Arma el formato de "Vuelos" + "Resumen" (sin asignar instructor) en un Google Sheet nuevo.</div>
+  <div class="panel">
+    <h2>Generar Pairings</h2>
+    <div class="sub">
+      Las opciones de Filial / Flota / Sub flota salen de lo que REALMENTE existe en la base de datos para el
+      mes elegido (no son listas fijas). 1. "Ver vista previa" consulta BigQuery con los filtros actuales.
+      Desde ahí, las 3 se cruzan en vivo (como Looker): marcas una casilla y las demás se recalculan al toque
+      (unos segundos, contra BigQuery), mostrando solo las combinaciones que de verdad existen en la data — la
+      vista previa muestra como máximo 300 filas, pero el contador de arriba siempre es el total real. El tipo
+      de carga siempre es FP (no es un filtro — así se definió el flujo). 2. "Generar candidatos" aplica las
+      reglas de LCK — acá SOLO importa qué Sub flota marcaste (Flota queda fuera de este paso: es un filtro
+      independiente que solo sirve para explorar la data cruda en el paso 1, no para decidir qué reglas
+      correr). 3. "Generar Google Sheet" arma el archivo final.
+    </div>
 
-  <label for="mes">Mes</label>
-  <select id="mes">
-    <option value="10">Octubre 2026</option>
-    <option value="11">Noviembre 2026</option>
-    <option value="12">Diciembre 2026</option>
-  </select>
+    <label class="campo" for="mes">Mes</label>
+    <select id="mes" onchange="cargarOpcionesDeFiltro()">
+      <option value="10">Octubre 2026</option>
+      <option value="11">Noviembre 2026</option>
+      <option value="12">Diciembre 2026</option>
+    </select>
+    <div id="estadoOpciones" class="aviso"></div>
 
-  <label for="flota">Flota</label>
-  <select id="flota">
-    <option value="320">A320 / A319 (Narrow Body)</option>
-    <option value="767">B767 (Wide Body)</option>
-    <option value="787">B787 (Wide Body)</option>
-  </select>
+    <label class="campo">Filial</label>
+    <div class="checkboxes" id="checksFilial"></div>
 
-  <button id="btnGenerar" onclick="generar()">Generar</button>
+    <label class="campo">Flota</label>
+    <div class="checkboxes" id="checksFlota"></div>
 
-  <div id="estado"></div>
+    <label class="campo">Sub flota</label>
+    <div class="checkboxes" id="checksSubflota"></div>
+    <div class="toggleLinks">
+      <a onclick="marcarTodosVisibles('checksSubflota', true)">Marcar todas</a>
+      <a onclick="marcarTodosVisibles('checksSubflota', false)">Desmarcar todas</a>
+    </div>
+    <div class="aviso">Reglas de candidato (paso 2 y 3) solo definidas para subflotas 319/320 (NB) y 763/788/789 (WB).</div>
+
+    <hr>
+
+    <div class="paso">
+      <button id="btnBase" onclick="verBaseDatos()">1. Ver vista previa (consulta BigQuery con los filtros actuales)</button>
+      <div id="estadoBase"></div>
+    </div>
+    <div id="baseDatosWrap" class="resultWrap"></div>
+
+    <div class="paso" id="pasoCandidatos" style="display:none;">
+      <button id="btnCandidatos" onclick="generarCandidatos()">2. Generar candidatos (aplica reglas de LCK)</button>
+      <div id="estadoCandidatos"></div>
+    </div>
+    <div id="candidatosWrap" class="resultWrap"></div>
+
+    <div class="paso" id="pasoGenerar" style="display:none;">
+      <button id="btnGenerar" onclick="generarSheet()">3. Generar Google Sheet</button>
+      <div id="estadoGenerar"></div>
+    </div>
+  </div>
 
   <script>
-    function generar() {
-      var boton = document.getElementById('btnGenerar');
-      var estado = document.getElementById('estado');
-      boton.disabled = true;
-      estado.innerHTML = 'Generando, esto puede tardar uno o dos minutos (está consultando BigQuery)...';
+    var vistaPreviaActiva = false; // true después del primer click en "Ver vista previa"
+    var requestIdFacetas = 0; // descarta respuestas que llegan fuera de orden (clicks rápidos)
+    var DIMS = [
+      { id: 'checksFilial', dim: 'filial', marcarPorDefecto: ['LP'] },
+      { id: 'checksFlota', dim: 'flota', marcarPorDefecto: [] },
+      { id: 'checksSubflota', dim: 'subflota', marcarPorDefecto: [] },
+    ];
+
+    function valoresMarcados(idContenedor) {
+      var out = [];
+      document.querySelectorAll('#' + idContenedor + ' input[type=checkbox]:checked').forEach(function (cb) { out.push(cb.value); });
+      return out;
+    }
+
+    function getFiltrosBase() {
+      return {
+        mes: document.getElementById('mes').value,
+        filiales: valoresMarcados('checksFilial'),
+        flotas: valoresMarcados('checksFlota'),
+        subflotas: valoresMarcados('checksSubflota'),
+      };
+    }
+
+    function marcarTodosVisibles(idContenedor, marcar) {
+      document.querySelectorAll('#' + idContenedor + ' label').forEach(function (lab) {
+        if (lab.classList.contains('oculto')) return;
+        lab.querySelector('input').checked = marcar;
+      });
+      recalcularFacetas();
+    }
+
+    // Construye las casillas de Filial/Flota/Sub flota a partir de los valores REALES que
+    // devuelve BigQuery para el mes elegido (pedido explícito de Fernando 2026-10-03: no
+    // escribir a mano una lista de "NB/WB/E02/..." -> leerla de la base de datos, porque ahí se
+    // había colado E02 como si fuera un valor de Flota cuando en realidad es de Sub flota).
+    // Se llama al cargar la página y cada vez que cambia el Mes -> pide las facetas SIN ningún
+    // filtro (los 3 arrays vacíos), así el conteo que viene es el de TODO el mes.
+    function cargarOpcionesDeFiltro() {
+      vistaPreviaActiva = false;
+      document.getElementById('baseDatosWrap').innerHTML = '';
+      document.getElementById('estadoBase').innerHTML = '';
+      document.getElementById('pasoCandidatos').style.display = 'none';
+      document.getElementById('pasoGenerar').style.display = 'none';
+      document.getElementById('candidatosWrap').innerHTML = '';
 
       var mes = document.getElementById('mes').value;
-      var flota = document.getElementById('flota').value;
+      var estadoOp = document.getElementById('estadoOpciones');
+      estadoOp.textContent = 'Cargando opciones de Filial/Flota/Sub flota desde BigQuery...';
+      DIMS.forEach(function (d) { document.getElementById(d.id).innerHTML = ''; });
+
+      google.script.run
+        .withSuccessHandler(function (resultado) {
+          estadoOp.textContent = '';
+          DIMS.forEach(function (d) {
+            var cont = document.getElementById(d.id);
+            var conteo = resultado.facetas[d.dim] || {};
+            Object.keys(conteo).sort().forEach(function (val) {
+              var marcado = d.marcarPorDefecto.indexOf(val) !== -1;
+              var label = document.createElement('label');
+              label.setAttribute('data-val', val);
+              label.innerHTML = '<input type="checkbox" value="' + val + '"' + (marcado ? ' checked' : '') +
+                ' onchange="recalcularFacetas()"> ' + val + ' <span class="cuenta">(' + conteo[val] + ')</span>';
+              cont.appendChild(label);
+            });
+          });
+        })
+        .withFailureHandler(function (err) {
+          estadoOp.innerHTML = '<span class="error">Error cargando opciones: ' + err.message + '</span>';
+        })
+        .obtenerFacetasYVistaPrevia(mes, [], [], []);
+    }
+
+    // Cada cambio de casilla le pide al SERVIDOR (no al cliente) tanto los conteos por faceta
+    // como la vista previa -> la agregación corre dentro de BigQuery (tabla gigante, no cabe en
+    // la memoria de Apps Script), acá solo llegan los conteos (~20-30 filas) y hasta 300 filas
+    // de vista previa. `requestIdFacetas` descarta una respuesta vieja si el usuario ya volvió a
+    // marcar otra casilla antes de que la anterior respondiera.
+    function recalcularFacetas() {
+      if (!vistaPreviaActiva) return;
+      var f = getFiltrosBase();
+      var miId = ++requestIdFacetas;
+      var estado = document.getElementById('estadoBase');
+      estado.innerHTML = 'Actualizando...';
+
+      google.script.run
+        .withSuccessHandler(function (resultado) {
+          if (miId !== requestIdFacetas) return; // llegó una respuesta más nueva mientras tanto
+          estado.innerHTML = '';
+          aplicarFacetas(resultado.facetas);
+          var etiqueta = 'registro(s)' + (resultado.recortada ? ' (vista previa limitada a las primeras 300 filas)' : '');
+          renderTabla('baseDatosWrap', { columnas: resultado.columnas, filas: resultado.filas, total: resultado.total }, etiqueta);
+        })
+        .withFailureHandler(function (err) {
+          if (miId !== requestIdFacetas) return;
+          estado.innerHTML = '<span class="error">Error: ' + err.message + '</span>';
+        })
+        .obtenerFacetasYVistaPrevia(f.mes, f.filiales, f.flotas, f.subflotas);
+    }
+
+    // Aplica los conteos que YA vienen calculados desde BigQuery (cada uno excluyendo su propia
+    // dimensión, ver `obtenerFacetasYVistaPrevia` en el .gs) -> actualiza el contador junto a
+    // cada casilla, oculta las que dan 0 ("si no existe se va a desaparecer"), y si una casilla
+    // oculta estaba marcada, la desmarca (ya no es una combinación posible).
+    function aplicarFacetas(facetas) {
+      DIMS.forEach(function (d) {
+        var conteo = facetas[d.dim] || {};
+        document.querySelectorAll('#' + d.id + ' label').forEach(function (lab) {
+          var val = lab.getAttribute('data-val');
+          var n = conteo[val] || 0;
+          lab.querySelector('.cuenta').textContent = n > 0 ? '(' + n + ')' : '';
+          var input = lab.querySelector('input');
+          if (n === 0) {
+            lab.classList.add('oculto');
+            if (input.checked) input.checked = false;
+          } else {
+            lab.classList.remove('oculto');
+          }
+        });
+      });
+    }
+
+    function renderTabla(wrapId, resultado, totalLabel) {
+      var wrap = document.getElementById(wrapId);
+      var meta = (resultado.total !== undefined ? resultado.total : resultado.filas.length) + ' ' + totalLabel;
+      if (resultado.excluidosCount !== null && resultado.excluidosCount !== undefined) {
+        meta += ' · ' + resultado.excluidosCount + ' excluido(s) (NB)';
+      }
+      var html = '<div class="meta">' + meta + '</div>';
+      if (resultado.aviso) html += '<div class="aviso">' + resultado.aviso + '</div>';
+      if (resultado.filas.length === 0) {
+        wrap.innerHTML = html + '<p>No se encontraron registros con estos filtros.</p>';
+        return;
+      }
+      html += '<div class="tabla-scroll"><table><thead><tr>';
+      resultado.columnas.forEach(function (c) { html += '<th>' + c + '</th>'; });
+      html += '</tr></thead><tbody>';
+      resultado.filas.forEach(function (fila) {
+        html += '<tr>';
+        fila.forEach(function (v) { html += '<td>' + (v === undefined || v === null ? '' : v) + '</td>'; });
+        html += '</tr>';
+      });
+      html += '</tbody></table></div>';
+      wrap.innerHTML = html;
+    }
+
+    function verBaseDatos() {
+      var btn = document.getElementById('btnBase');
+      var estado = document.getElementById('estadoBase');
+
+      btn.disabled = true;
+      estado.innerHTML = 'Consultando BigQuery...';
+      document.getElementById('baseDatosWrap').innerHTML = '';
+
+      vistaPreviaActiva = true;
+      var miId = ++requestIdFacetas;
+      var f = getFiltrosBase();
+
+      google.script.run
+        .withSuccessHandler(function (resultado) {
+          btn.disabled = false;
+          if (miId !== requestIdFacetas) return;
+          estado.innerHTML = '';
+          aplicarFacetas(resultado.facetas);
+          var etiqueta = 'registro(s)' + (resultado.recortada ? ' (vista previa limitada a las primeras 300 filas)' : '');
+          renderTabla('baseDatosWrap', { columnas: resultado.columnas, filas: resultado.filas, total: resultado.total }, etiqueta);
+          document.getElementById('pasoCandidatos').style.display = 'block';
+        })
+        .withFailureHandler(function (err) {
+          btn.disabled = false;
+          vistaPreviaActiva = false;
+          estado.innerHTML = '<span class="error">Error: ' + err.message + '</span>';
+        })
+        .obtenerFacetasYVistaPrevia(f.mes, f.filiales, f.flotas, f.subflotas);
+    }
+
+    function generarCandidatos() {
+      var btn = document.getElementById('btnCandidatos');
+      var estado = document.getElementById('estadoCandidatos');
+      var f = getFiltrosBase();
+
+      if (f.subflotas.length === 0) { estado.innerHTML = '<span class="error">Elige al menos una subflota.</span>'; return; }
+      if (f.filiales.length === 0) { estado.innerHTML = '<span class="error">Elige al menos una filial.</span>'; return; }
+
+      btn.disabled = true;
+      estado.innerHTML = 'Aplicando reglas de LCK...';
+      document.getElementById('candidatosWrap').innerHTML = '';
+      document.getElementById('pasoGenerar').style.display = 'none';
+
+      google.script.run
+        .withSuccessHandler(function (resultado) {
+          btn.disabled = false;
+          estado.innerHTML = '';
+          renderTabla('candidatosWrap', resultado, 'candidato(s) válido(s)');
+          document.getElementById('pasoGenerar').style.display = 'block';
+        })
+        .withFailureHandler(function (err) {
+          btn.disabled = false;
+          estado.innerHTML = '<span class="error">Error: ' + err.message + '</span>';
+        })
+        .previsualizarCandidatosDesdeFiltros(f.mes, f.filiales, f.subflotas);
+    }
+
+    function generarSheet() {
+      var btn = document.getElementById('btnGenerar');
+      var estado = document.getElementById('estadoGenerar');
+      var f = getFiltrosBase();
+
+      btn.disabled = true;
+      estado.innerHTML = 'Generando, esto puede tardar uno o dos minutos...';
 
       google.script.run
         .withSuccessHandler(function (url) {
-          boton.disabled = false;
+          btn.disabled = false;
           estado.innerHTML = 'Listo. <a href="' + url + '" target="_blank">Abrir el Google Sheet generado</a>';
         })
         .withFailureHandler(function (err) {
-          boton.disabled = false;
+          btn.disabled = false;
           estado.innerHTML = '<span class="error">Error: ' + err.message + '</span>';
         })
-        .generarPairingsWebApp(mes, flota);
+        .generarPairingsDesdeFiltros(f.mes, f.filiales, f.subflotas);
     }
+
+    cargarOpcionesDeFiltro(); // carga inicial, con el Mes por defecto del <select>
   </script>
 </body>
 </html>

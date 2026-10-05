@@ -165,42 +165,278 @@ function doGet(e) {
     .addMetaTag('viewport', 'width=device-width, initial-scale=1');
 }
 
-// Llamada desde el HTML vía google.script.run. Devuelve la URL del Sheet generado.
-function generarPairingsWebApp(mesStr, flotaStr) {
+// ============================================================================
+// FLUJO UNIFICADO (2026-10-03, pedido de Fernando) — un solo panel con Mes + Filial + Flota +
+// Subflota + Tipo de carga, y 3 pasos progresivos: "Ver vista previa" (base cruda, sin reglas
+// de LCK) -> "Generar candidatos" (aplica las reglas NB/WB según qué subflotas se eligieron) ->
+// "Generar Google Sheet" (escribe el archivo final). Reemplaza el flujo viejo de un solo
+// desplegable de Flota.
+//
+// "Tipo de carga" SÍ se respeta en los 3 pasos (reemplaza el `load_type_code = 'FP'` que estaba
+// fijo en las consultas NB/WB). "Filial" igual, en los 3 pasos. Si se eligen subflotas sin
+// reglas de candidato definidas (ej. 773=B777, 330=A330) -> esas quedan FUERA de "Generar
+// candidatos"/"Generar Sheet" (sí aparecen en "Ver vista previa", que es solo data cruda) y se
+// avisa en el resultado -> no se inventan reglas para flotas que no se han confirmado.
+// ============================================================================
+
+// A qué "grupo de reglas" (NB o WB-767 o WB-787) pertenece cada subflota elegida.
+function identificarGruposFlota_(subflotas) {
+  var grupos = [];
+  var subflotasNB = subflotas.filter(function (s) { return s === "319" || s === "320"; });
+  if (subflotasNB.length > 0) {
+    grupos.push({ clave: "NB", etiqueta: "NB A320/A319", tipo: "NB", subflotasNB: subflotasNB });
+  }
+  if (subflotas.indexOf("763") !== -1) {
+    grupos.push({ clave: "B767", etiqueta: "WB B767", tipo: "WB", subflotasWB: ["763"], cupos: 5, actividad: "LCK B767" });
+  }
+  var subflotas787 = subflotas.filter(function (s) { return s === "788" || s === "789"; });
+  if (subflotas787.length > 0) {
+    grupos.push({ clave: "B787", etiqueta: "WB B787", tipo: "WB", subflotasWB: subflotas787, cupos: 6, actividad: "LCK B787" });
+  }
+  return grupos;
+}
+
+// NOTA (2026-10-04, bug reportado por Fernando): "flotas" YA NO se pasa a este pipeline.
+// Antes se aplicaba el mismo filtro de Flota a los 3 grupos de reglas (NB/B767/B787) por
+// igual -> si marcabas Flota=NB pero tenías también subflotas de WB marcadas (763/788/789,
+// aunque sea por "Marcar todas"), los grupos B767/B787 terminaban cruzando
+// "fleet_type_code='NB'" contra vuelos que en la data real tienen fleet_type_code='WB', y
+// siempre daban 0 candidatos en silencio (sin ningún aviso de por qué). El enrutamiento a NB/
+// B767/B787 YA está 100% determinado por qué Subflotas se marcaron (`identificarGruposFlota_`)
+// -> el checkbox de Flota solo tiene sentido como filtro real e independiente en "Ver vista
+// previa" (ver `obtenerFacetasYVistaPrevia`/`consultarFacetasYVistaPrevia_`), no acá.
+function previsualizarCandidatosDesdeFiltros(mesStr, filiales, subflotas) {
   var mes = parseInt(mesStr, 10);
   var anio = 2026;
   var PROJECT_ID_FACTURACION = "datadem-home";
+  var grupos = identificarGruposFlota_(subflotas);
+
+  var columnas = ["Flota", "Pairing ID", "Fecha Ida", "DíaSem", "Vuelo Ida", "Dep", "Arr", "STD Ida", "STA Ida",
+    "Fecha Vuelta", "Vuelo Vuelta", "Dep Vta", "Arr Vta", "STD Vuelta", "STA Vuelta", "Conexión/PSV (solo NB)", "Sub Flota", "Posible 2do vuelo (solo NB)"];
+
+  if (grupos.length === 0) {
+    return {
+      columnas: columnas, filas: [], total: 0, excluidosCount: null,
+      aviso: "No hay reglas de candidatos definidas para las subflotas elegidas (solo existen para 319/320 = NB y 763/788/789 = WB). Revisa 'Ver vista previa' para ver la data cruda de esas subflotas igual.",
+    };
+  }
+
+  var filas = [];
+  var excluidosTotal = 0;
+  var huboNB = false;
+  var subflotasSinReglas = subflotas.filter(function (s) { return ["319", "320", "763", "788", "789"].indexOf(s) === -1; });
+
+  grupos.forEach(function (g) {
+    if (g.tipo === "NB") {
+      huboNB = true;
+      var r = calcularCandidatosNB_(PROJECT_ID_FACTURACION, mes, anio, filiales, g.subflotasNB);
+      excluidosTotal += r.excluidos.length;
+      r.validos.forEach(function (v) {
+        filas.push(["NB", v.pairingId, v.fecha, v.diaSem, v.vueloIda, v.dep, v.arr, String(v.stdIda), String(v.staIda),
+          "", v.vueloVuelta, v.depVta, v.arrVta, String(v.stdVuelta), String(v.staVuelta),
+          "Cx " + formatearDuracionHhMm_(v.conexionMs) + " / PSV " + formatearDuracionHhMm_(v.psvMs), v.subFlota, v.posible2do]);
+      });
+    } else {
+      var rWB = calcularCandidatosWB_(PROJECT_ID_FACTURACION, mes, anio, g.subflotasWB, filiales);
+      Object.keys(rWB.pairingsPorPk).forEach(function (pk) {
+        var piernas = rWB.pairingsPorPk[pk];
+        var ida = piernas[0], vta = piernas[1];
+        filas.push([g.etiqueta, ida.trip, formatearDDMMYYYY_(ida.fechaVueloDt), ida.diaSemana, ida.vuelo, ida.dep, ida.arr, String(ida.std), String(ida.sta),
+          formatearDDMMYYYY_(vta.fechaVueloDt), vta.vuelo, vta.dep, vta.arr, String(vta.std), String(vta.sta), "", ida.subFleet, ""]);
+      });
+    }
+  });
+
+  var aviso = subflotasSinReglas.length > 0
+    ? "Subflotas sin reglas de candidato definidas, omitidas acá: " + subflotasSinReglas.join(", ")
+    : null;
+
+  return { columnas: columnas, filas: filas, total: filas.length, excluidosCount: huboNB ? excluidosTotal : null, aviso: aviso };
+}
+
+// Llamada desde el HTML vía google.script.run. Devuelve la URL del Sheet generado — una hoja
+// "Vuelos <grupo>"/"Resumen <grupo>"/"Candidatos <grupo>" (+"Excluidos NB" si aplica) POR CADA
+// grupo de flota presente en la selección de Subflota (puede terminar con varias flotas en el
+// mismo archivo, ej. NB + B767 + B787 juntos si se marcan todas las subflotas correspondientes).
+function generarPairingsDesdeFiltros(mesStr, filiales, subflotas) {
+  var mes = parseInt(mesStr, 10);
+  var anio = 2026;
+  var PROJECT_ID_FACTURACION = "datadem-home";
+  var grupos = identificarGruposFlota_(subflotas);
+  if (grupos.length === 0) {
+    throw new Error("No hay reglas de candidatos definidas para las subflotas elegidas (solo 319/320/763/788/789).");
+  }
 
   var nombresMes = { 10: "Octubre", 11: "Noviembre", 12: "Diciembre" };
   var nombreMes = nombresMes[mes] || ("Mes" + mes);
-
-  var etiquetaFlota = { "320": "NB A320", "767": "WB B767", "787": "WB B787" }[flotaStr] || flotaStr;
-  var nombreArchivo = "Pairings " + etiquetaFlota + " - " + nombreMes + " " + anio;
+  var etiquetas = grupos.map(function (g) { return g.etiqueta; }).join(" + ");
+  var nombreArchivo = "Pairings " + etiquetas + " - " + nombreMes + " " + anio;
 
   var carpeta = obtenerOCrearCarpetaWebApp_();
   var ss = SpreadsheetApp.create(nombreArchivo);
   var archivo = DriveApp.getFileById(ss.getId());
   carpeta.addFile(archivo);
-  DriveApp.getRootFolder().removeFile(archivo); // sacarlo de Mi Unidad raíz, que quede solo en la carpeta
+  DriveApp.getRootFolder().removeFile(archivo);
 
-  var hojaVuelos = ss.getSheets()[0];
-  hojaVuelos.setName("Vuelos");
-  var hojaResumen = ss.insertSheet("Resumen");
+  var primeraHojaDelArchivo = ss.getSheets()[0];
+  var primeraUsada = false;
 
-  if (flotaStr === "320") {
-    generarNB_(PROJECT_ID_FACTURACION, mes, anio, hojaVuelos, hojaResumen);
-  } else if (flotaStr === "767" || flotaStr === "787") {
-    var subflotas = flotaStr === "767" ? ["763"] : ["788", "789"];
-    var cupos = flotaStr === "767" ? 5 : 6;
-    var actividad = "LCK B" + flotaStr;
-    generarWBGenerico_(PROJECT_ID_FACTURACION, mes, anio, subflotas, cupos, actividad, hojaVuelos, hojaResumen);
-  } else {
-    throw new Error("Flota no reconocida: " + flotaStr);
-  }
+  grupos.forEach(function (g) {
+    var hojaVuelos;
+    if (!primeraUsada) {
+      hojaVuelos = primeraHojaDelArchivo;
+      hojaVuelos.setName("Vuelos " + g.clave);
+      primeraUsada = true;
+    } else {
+      hojaVuelos = ss.insertSheet("Vuelos " + g.clave);
+    }
+    var hojaResumen = ss.insertSheet("Resumen " + g.clave);
+    var hojaCandidatos = ss.insertSheet("Candidatos " + g.clave);
+
+    if (g.tipo === "NB") {
+      var hojaExcluidos = ss.insertSheet("Excluidos " + g.clave);
+      generarNB_(PROJECT_ID_FACTURACION, mes, anio, hojaVuelos, hojaResumen, hojaCandidatos, hojaExcluidos, filiales, g.subflotasNB);
+    } else {
+      generarWBGenerico_(PROJECT_ID_FACTURACION, mes, anio, g.subflotasWB, g.cupos, g.actividad, hojaVuelos, hojaResumen, hojaCandidatos, filiales);
+    }
+  });
 
   return ss.getUrl();
 }
 
+// ============================================================================
+// FACETADO TIPO LOOKER, EN EL SERVIDOR (2026-10-03) — reemplaza un primer intento
+// (`obtenerRegistrosCrudosMes`) que traía el MES COMPLETO sin ningún filtro a la memoria de
+// Apps Script y reventó con "memoria insuficiente": esta tabla cubre TODAS las filiales/flotas/
+// subflotas de 2 meses de la aerolínea entera, son decenas o cientos de miles de filas — Apps
+// Script no tiene memoria para cargar eso en un array de JS ni para serializarlo a JSON.
+//
+// La agregación (conteos por valor, para las facetas) y el recorte de la vista previa se hacen
+// DENTRO de BigQuery (para eso está hecho, agrega sobre tablas enormes sin problema) -> a Apps
+// Script solo le llegan los CONTEOS (unas 20-30 filas) y como máximo 300 filas de vista previa,
+// nunca la tabla cruda completa. Esto convierte el facetado de "una sola descarga + filtrado en
+// el cliente" a "una consulta a BigQuery por cada cambio de casilla" (como funciona Looker de
+// verdad contra una tabla grande) — unos segundos por click, pero sin riesgo de reventar.
+// ============================================================================
+var QUALIFY_ULTIMA_CARGA_SQL_ = [
+  "QUALIFY",
+  "  CASE",
+  "    WHEN load_type_code = 'FP' AND",
+  "         DATE(ingestion_datetime) = MAX(CASE WHEN load_type_code = 'FP' THEN DATE(ingestion_datetime) END)",
+  "           OVER (PARTITION BY subsidiary_code, fleet_type_code, crew_range_type_code,",
+  "                              reference_month_number, reference_year)",
+  "      THEN 0",
+  "    WHEN load_type_code = 'ES' AND",
+  "         MAX(CASE WHEN load_type_code = 'FP' THEN 0 ELSE 0 END)",
+  "           OVER (PARTITION BY subsidiary_code, fleet_type_code, crew_range_type_code,",
+  "                              reference_month_number, reference_year) = -1 AND",
+  "         DATE(ingestion_datetime) = MAX(CASE WHEN load_type_code = 'ES' THEN DATE(ingestion_datetime) END)",
+  "           OVER (PARTITION BY subsidiary_code, fleet_type_code, crew_range_type_code,",
+  "                              reference_month_number, reference_year)",
+  "      THEN 0",
+  "    ELSE -1",
+  "  END = 0",
+].join("\n");
+
+function construirWhereDimension_(col, valores) {
+  return (valores && valores.length) ? ("    AND " + col + " IN (" + sqlListaStrings_(valores) + ")\n") : "";
+}
+
+function obtenerFacetasYVistaPrevia(mesStr, filiales, flotas, subflotas) {
+  var mes = parseInt(mesStr, 10);
+  var anio = 2026;
+  var PROJECT_ID_FACTURACION = "datadem-home";
+  return consultarFacetasYVistaPrevia_(PROJECT_ID_FACTURACION, mes, anio, filiales, flotas, subflotas);
+}
+
+function consultarFacetasYVistaPrevia_(projectId, mesObjetivo, anioObjetivo, filiales, flotas, subflotas) {
+  var fechaInicio = new Date(anioObjetivo, mesObjetivo - 2, 1);
+  var fechaFin = new Date(anioObjetivo, mesObjetivo, 0);
+  function fmt(d) { return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); }
+
+  var whereFilial = construirWhereDimension_("subsidiary_code", filiales);
+  var whereFlota = construirWhereDimension_("fleet_type_code", flotas);
+  var whereSubflota = construirWhereDimension_("subfleet_code", subflotas);
+
+  // "Tipo de carga" ya NO es un filtro seleccionable (pedido de Fernando 2026-10-03: "esto
+  // tiene que estar siempre buscar el FP") -> el `deduped` de acá abajo ya hace exactamente eso
+  // sin que haga falta ningún filtro explícito: su QUALIFY se queda con la carga MÁS RECIENTE
+  // por partición, prefiriendo SIEMPRE 'FP' y solo cayendo a 'ES' si para esa combinación
+  // filial+flota+mes no existe ninguna carga FP -> es el mismo comportamiento que tenía el
+  // proyecto antes de que se agregara el checkbox de Tipo de carga (ver [[reference-pairings-manual]]).
+  var base = [
+    "WITH deduped AS (",
+    "  SELECT *",
+    "  FROM `operations-data-prod.carmen_gold.crew_pairing_carmen_system`",
+    "  WHERE flight_start_date_local_time BETWEEN DATE '" + fmt(fechaInicio) + "' AND DATE '" + fmt(fechaFin) + "'",
+    "    AND crew_range_type_code = 'SAB'",
+    "  " + QUALIFY_ULTIMA_CARGA_SQL_,
+    ")",
+  ].join("\n");
+
+  // Para cada dimensión: cuenta agrupado por SU valor, filtrando por las OTRAS 2 (nunca por sí
+  // misma) -> así se sabe qué opciones de esa dimensión siguen teniendo registros dado lo que
+  // está marcado en las demás (si una opción no aparece en el resultado, es 0). Llamada SIN
+  // ningún filtro (los 3 arrays vacíos) también sirve para poblar la lista de opciones reales
+  // de cada dimensión (los valores que de verdad existen en la base de datos, no una lista
+  // inventada a mano).
+  var facetasQuery = base + "\n" + [
+    "SELECT 'filial' AS dim, subsidiary_code AS valor, COUNT(*) AS n FROM deduped WHERE TRUE\n" + whereFlota + whereSubflota + "GROUP BY subsidiary_code",
+    "SELECT 'flota' AS dim, fleet_type_code AS valor, COUNT(*) AS n FROM deduped WHERE TRUE\n" + whereFilial + whereSubflota + "GROUP BY fleet_type_code",
+    "SELECT 'subflota' AS dim, subfleet_code AS valor, COUNT(*) AS n FROM deduped WHERE TRUE\n" + whereFilial + whereFlota + "GROUP BY subfleet_code",
+  ].join("\nUNION ALL\n");
+
+  var filasFacetas = ejecutarQueryBigQuery_(facetasQuery, projectId);
+  var facetas = { filial: {}, flota: {}, subflota: {} };
+  filasFacetas.forEach(function (f) { facetas[f.dim][f.valor] = parseInt(f.n, 10); });
+
+  // Vista previa: las 3 dimensiones en AND (incluida ella misma), recortada a 300 filas. El
+  // TOTAL real (antes del recorte) viaja en cada fila vía COUNT(*) OVER() -> en BigQuery el
+  // LIMIT se aplica DESPUÉS de evaluar la función de ventana, así que ese total ya refleja TODAS
+  // las filas que cumplen el filtro, no solo las 300 que se devuelven.
+  var previaQuery = base + "\n" + [
+    "SELECT",
+    "  pairing_id                       AS trip,",
+    "  duty_calendar_day_number         AS dia_duty,",
+    "  pairing_start_date               AS fecha_inicio_trip,",
+    "  flight_start_date_local_time     AS inicio_vuelo_lt,",
+    "  flight_number                    AS vuelo,",
+    "  departure_airport_code           AS dep,",
+    "  arrival_airport_code             AS arr,",
+    "  flight_departure_time_crew_base  AS std_hb,",
+    "  flight_arrival_hour_block_time   AS sta_hb,",
+    "  flight_block_time                AS hbt,",
+    "  subfleet_code                    AS sub_fleet,",
+    "  fleet_type_code                  AS flota,",
+    "  subsidiary_code                  AS filial,",
+    "  load_type_code                   AS tipo_carga,",
+    "  COUNT(*) OVER()                  AS total_match",
+    "FROM deduped",
+    "WHERE TRUE",
+    whereFilial + whereFlota + whereSubflota,
+    "ORDER BY pairing_id ASC",
+    "LIMIT 300",
+  ].join("\n");
+
+  var filasPrevia = ejecutarQueryBigQuery_(previaQuery, projectId);
+  var columnas = ["trip", "dia_duty", "fecha_inicio_trip", "inicio_vuelo_lt", "vuelo",
+    "dep", "arr", "std_hb", "sta_hb", "hbt", "sub_fleet", "flota", "filial", "tipo_carga"];
+  var filasOut = filasPrevia.map(function (f) { return columnas.map(function (c) { return f[c]; }); });
+  var total = filasPrevia.length > 0 ? parseInt(filasPrevia[0].total_match, 10) : 0;
+
+  return { facetas: facetas, columnas: columnas, filas: filasOut, total: total, recortada: total > filasOut.length };
+}
+
+// "Flota" es una columna REAL de la tabla (`fleet_type_code`), DISTINTA de "Subflota"
+// (`subfleet_code`) -> no son lo mismo ni se derivan una de la otra con una regla fija
+// (confirmado 2026-10-03: Fernando mostró que Flota=NB + Subflota=788/789 en la herramienta de
+// referencia da 12 registros, no 0 ni "todo" -> son dos filtros independientes que se cruzan
+// con AND, igual que cualquier otro filtro). NO hay una lista fija de valores posibles para
+// Flota/Subflota/Filial escrita a mano acá -> Fernando pidió explícitamente (2026-10-03) que
+// las opciones de los checkboxes salgan de lo que REALMENTE existe en la base de datos (ej.
+// "E02" apareció mal puesto como Flota en un intento anterior, cuando en realidad es un valor
+// de Subflota) -> `obtenerFacetasYVistaPrevia` llamada sin filtros (3 arrays vacíos) devuelve
+// las opciones reales de cada dimensión, y el HTML arma los checkboxes con eso.
 function obtenerOCrearCarpetaWebApp_() {
   var NOMBRE_CARPETA = "Pairings Web App (generados automáticamente)";
   var it = DriveApp.getFoldersByName(NOMBRE_CARPETA);
@@ -216,22 +452,53 @@ function obtenerOCrearCarpetaWebApp_() {
 // tienen el rango fijo) y el volcado a hoja (para no tocar las funciones que ya usa el flujo
 // mensual real de B767/B787).
 // ============================================================================
-function generarWBGenerico_(projectId, mes, anio, subflotas, cuposPorVuelo, actividad, hojaVuelos, hojaResumen) {
-  var filasCrudas = consultarBigQueryWBGenerico_(projectId, subflotas, mes, anio);
+// Separado de la escritura en Sheet (2026-10-03, para poder reusar lo mismo en la vista
+// previa en vivo, que NO escribe nada todavía).
+function calcularCandidatosWB_(projectId, mes, anio, subflotas, filiales) {
+  var filasCrudas = consultarBigQueryWBGenerico_(projectId, subflotas, mes, anio, filiales);
   var resultado = cargarYFiltrarWB_(filasCrudas, mes, anio);
   var validosFlota = resultado.validos.filter(function (p) { return subflotas.indexOf(p.subFleet) !== -1; });
   var pairingsPorPk = armarPairingsPorPk_(validosFlota);
-
-  var infoBloques = escribirHojaVuelosWBWebApp_(hojaVuelos, pairingsPorPk, cuposPorVuelo, actividad);
-  escribirHojaResumenWBWebApp_(hojaResumen, infoBloques, hojaVuelos.getName());
+  return { pairingsPorPk: pairingsPorPk };
 }
 
-function consultarBigQueryWBGenerico_(projectId, subflotas, mesObjetivo, anioObjetivo) {
+function generarWBGenerico_(projectId, mes, anio, subflotas, cuposPorVuelo, actividad, hojaVuelos, hojaResumen, hojaCandidatos, filiales) {
+  var r = calcularCandidatosWB_(projectId, mes, anio, subflotas, filiales);
+  var infoBloques = escribirHojaVuelosWBWebApp_(hojaVuelos, r.pairingsPorPk, cuposPorVuelo, actividad);
+  escribirHojaResumenWBWebApp_(hojaResumen, infoBloques, hojaVuelos.getName());
+  if (hojaCandidatos) escribirHojaCandidatosWB_(hojaCandidatos, r.pairingsPorPk);
+}
+
+// "Candidatos" para WB: 1 fila por pairing (ida+vuelta), con los mismos datos que terminan en
+// "Vuelos" pero en formato plano (sin bloques/colores), igual idea que la hoja "Candidatos" de
+// NB — acá no hay "Posible 2do vuelo" porque en WB 1 pairing YA es el bloque completo (no se
+// combinan 2 pairings distintos como en NB).
+function escribirHojaCandidatosWB_(hoja, pairingsPorPk) {
+  var headers = ["Pairing ID", "Fecha Ida", "DíaSem", "Vuelo Ida", "Dep", "Arr", "STD Ida", "STA Ida", "HBT Ida",
+    "Fecha Vuelta", "Vuelo Vuelta", "Dep Vta", "Arr Vta", "STD Vuelta", "STA Vuelta", "HBT Vuelta", "Sub Flota"];
+  var filas = [headers];
+  Object.keys(pairingsPorPk).forEach(function (pk) {
+    var piernas = pairingsPorPk[pk];
+    var ida = piernas[0], vta = piernas[1];
+    filas.push([
+      ida.trip, formatearDDMMYYYY_(ida.fechaVueloDt), ida.diaSemana, ida.vuelo, ida.dep, ida.arr, String(ida.std), String(ida.sta), String(ida.hbt),
+      formatearDDMMYYYY_(vta.fechaVueloDt), vta.vuelo, vta.dep, vta.arr, String(vta.std), String(vta.sta), String(vta.hbt), ida.subFleet,
+    ]);
+  });
+  var rango = hoja.getRange(1, 1, filas.length, headers.length);
+  rango.setValues(filas);
+  rango.offset(0, 0, 1, headers.length).setFontWeight("bold");
+  hoja.setFrozenRows(1);
+}
+
+function consultarBigQueryWBGenerico_(projectId, subflotas, mesObjetivo, anioObjetivo, filiales) {
+  filiales = filiales && filiales.length ? filiales : ["LP"];
+
   var fechaInicio = new Date(anioObjetivo, mesObjetivo - 2, 1); // 1 mes antes, para no perder pairings a caballo
   var fechaFin = new Date(anioObjetivo, mesObjetivo, 0); // último día del mes objetivo
   function fmt(d) { return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); }
 
-  var subflotasSQL = subflotas.map(function (s) { return "'" + s + "'"; }).join(", ");
+  var subflotasSQL = sqlListaStrings_(subflotas);
 
   var query = [
     "SELECT",
@@ -252,8 +519,7 @@ function consultarBigQueryWBGenerico_(projectId, subflotas, mesObjetivo, anioObj
     "FROM `operations-data-prod.carmen_gold.crew_pairing_carmen_system`",
     "WHERE",
     "  flight_start_date_local_time BETWEEN DATE '" + fmt(fechaInicio) + "' AND DATE '" + fmt(fechaFin) + "'",
-    "  AND subsidiary_code IN ('LP')",
-    "  AND load_type_code = 'FP'",
+    "  AND subsidiary_code IN (" + sqlListaStrings_(filiales) + ")",
     "  AND crew_range_type_code = 'SAB'",
     "  AND subfleet_code IN (" + subflotasSQL + ")",
     "QUALIFY",
@@ -389,8 +655,9 @@ var PSV_MAX_MS_ = 11 * 60 * 60 * 1000;
 var HORA_MIN_SALIDA_MS_ = 8.5 * 60 * 60 * 1000;
 var HBT_MIN_MS_ = 60 * 60 * 1000;
 
-function generarNB_(projectId, mes, anio, hojaVuelos, hojaResumen) {
-  var filasCrudas = consultarBigQueryNB_(projectId, mes, anio);
+// Separado de la escritura en Sheet (2026-10-03), mismo motivo que `calcularCandidatosWB_`.
+function calcularCandidatosNB_(projectId, mes, anio, filiales, subflotasNB) {
+  var filasCrudas = consultarBigQueryNB_(projectId, mes, anio, filiales, subflotasNB);
   var piernas = cargarYDepurarNB_(filasCrudas);
 
   var diaDutyMinRealPorTrip = {};
@@ -402,14 +669,66 @@ function generarNB_(projectId, mes, anio, hojaVuelos, hojaResumen) {
 
   var exclusiones = EXCLUSIONES_POR_MES_NB_[mes] || [];
   var piernasFiltradas = filtrarMesYRutaNB_(piernas, mes, anio, exclusiones);
-  var validos = armarPrimerasMitadesNB_(piernasFiltradas, diaDutyMinRealPorTrip);
-  var bloques = parearCandidatosNB_(validos);
+  var resultado = armarPrimerasMitadesNB_(piernasFiltradas, diaDutyMinRealPorTrip);
+  return { validos: resultado.validos, excluidos: resultado.excluidos };
+}
+
+function generarNB_(projectId, mes, anio, hojaVuelos, hojaResumen, hojaCandidatos, hojaExcluidos, filiales, subflotasNB) {
+  var r = calcularCandidatosNB_(projectId, mes, anio, filiales, subflotasNB);
+  var bloques = parearCandidatosNB_(r.validos);
 
   var infoBloques = escribirHojaVuelosNB_(hojaVuelos, bloques);
   escribirHojaResumenNB_(hojaResumen, infoBloques, hojaVuelos.getName());
+  if (hojaCandidatos) escribirHojaCandidatosNB_(hojaCandidatos, r.validos);
+  if (hojaExcluidos) escribirHojaExcluidosNB_(hojaExcluidos, r.excluidos);
 }
 
-function consultarBigQueryNB_(projectId, mesObjetivo, anioObjetivo) {
+// "Candidatos": tabla plana de los candidatos válidos (1 fila por trip, ida+vuelta), igual
+// formato que la hoja "Candidatos_validos" de `generar_candidatos_nb.py` (incluye Conexión/PSV
+// ya calculados como texto "h:mm" y "Posible 2do vuelo").
+function escribirHojaCandidatosNB_(hoja, validos) {
+  var headers = ["Fecha", "DíaSem", "Pairing ID", "Vuelo Ida", "Dep", "Arr", "STD Ida", "STA Ida", "HBT Ida",
+    "Vuelo Vuelta", "Dep Vta", "Arr Vta", "STD Vuelta", "STA Vuelta", "HBT Vuelta",
+    "Conexión", "PSV Total", "Sub Flota", "Posible 2do vuelo (mismo día)"];
+  var filas = [headers];
+  validos.forEach(function (v) {
+    filas.push([
+      v.fecha, v.diaSem, v.pairingId, v.vueloIda, v.dep, v.arr, String(v.stdIda), String(v.staIda), String(v.hbtIda),
+      v.vueloVuelta, v.depVta, v.arrVta, String(v.stdVuelta), String(v.staVuelta), String(v.hbtVuelta),
+      formatearDuracionHhMm_(v.conexionMs), formatearDuracionHhMm_(v.psvMs), v.subFlota, v.posible2do,
+    ]);
+  });
+  var rango = hoja.getRange(1, 1, filas.length, headers.length);
+  rango.setValues(filas);
+  rango.offset(0, 0, 1, headers.length).setFontWeight("bold");
+  hoja.setFrozenRows(1);
+}
+
+// "Excluidos": qué trips se descartaron en el paso de "primera mitad" y por qué — mismo
+// contenido que la hoja "Excluidos_primera_mitad" de `generar_candidatos_nb.py`. OJO: esto es
+// SOLO lo que se descarta en `armarPrimerasMitadesNB_`; un trip también puede haber quedado
+// fuera antes, en `filtrarMesYRutaNB_` (mes/ruta), y ese paso no registra motivo por trip (es
+// un filtro a nivel de PIERNA, no de trip completo) -> si un trip no aparece ni en "Candidatos"
+// ni en "Excluidos", lo más probable es que ninguna de sus piernas haya pasado el filtro de
+// mes/ruta en absoluto.
+function escribirHojaExcluidosNB_(hoja, excluidos) {
+  var headers = ["Pairing ID", "Motivo"];
+  var filas = [headers];
+  excluidos.forEach(function (e) { filas.push([e.trip, e.motivo]); });
+  var rango = hoja.getRange(1, 1, filas.length, headers.length);
+  rango.setValues(filas);
+  rango.offset(0, 0, 1, headers.length).setFontWeight("bold");
+  hoja.setFrozenRows(1);
+}
+
+function sqlListaStrings_(valores) {
+  return valores.map(function (v) { return "'" + String(v).replace(/'/g, "") + "'"; }).join(", ");
+}
+
+function consultarBigQueryNB_(projectId, mesObjetivo, anioObjetivo, filiales, subflotasNB) {
+  filiales = filiales && filiales.length ? filiales : ["LP"];
+  subflotasNB = subflotasNB && subflotasNB.length ? subflotasNB : ["319", "320"];
+
   var fechaInicio = new Date(anioObjetivo, mesObjetivo - 2, 1);
   var fechaFin = new Date(anioObjetivo, mesObjetivo, 0);
   function fmt(d) { return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); }
@@ -429,10 +748,9 @@ function consultarBigQueryNB_(projectId, mesObjetivo, anioObjetivo) {
     "FROM `operations-data-prod.carmen_gold.crew_pairing_carmen_system`",
     "WHERE",
     "  flight_start_date_local_time BETWEEN DATE '" + fmt(fechaInicio) + "' AND DATE '" + fmt(fechaFin) + "'",
-    "  AND subsidiary_code IN ('LP')",
-    "  AND load_type_code = 'FP'",
+    "  AND subsidiary_code IN (" + sqlListaStrings_(filiales) + ")",
     "  AND crew_range_type_code = 'SAB'",
-    "  AND subfleet_code IN ('319', '320')",
+    "  AND subfleet_code IN (" + sqlListaStrings_(subflotasNB) + ")",
     "QUALIFY",
     "  CASE",
     "    WHEN load_type_code = 'FP' AND",
@@ -494,39 +812,50 @@ function filtrarMesYRutaNB_(piernas, mes, anio, exclusiones) {
   });
 }
 
+// Devuelve {validos, excluidos} — `excluidos` trae el MOTIVO exacto de cada trip descartado
+// (puerto 1:1 de la misma lógica/motivos de `generar_candidatos_nb.py`), para que se pueda
+// auditar qué se filtró y por qué (pedido explícito de Fernando 2026-10-03).
 function armarPrimerasMitadesNB_(piernasFiltradas, diaDutyMinRealPorTrip) {
   var porTrip = {};
   piernasFiltradas.forEach(function (p) { (porTrip[p.trip] = porTrip[p.trip] || []).push(p); });
 
   var validos = [];
+  var excluidos = [];
+  function excluir(trip, motivo) { excluidos.push({ trip: trip, motivo: motivo }); }
+
   Object.keys(porTrip).forEach(function (trip) {
     var grupo = porTrip[trip];
     var diaMin = Math.min.apply(null, grupo.map(function (p) { return p.diaDuty; }));
-    if (diaDutyMinRealPorTrip[trip] !== undefined && diaMin !== diaDutyMinRealPorTrip[trip]) return; // día 1 real quedó fuera del filtro
+    if (diaDutyMinRealPorTrip[trip] !== undefined && diaMin !== diaDutyMinRealPorTrip[trip]) {
+      excluir(trip, "el día " + diaMin + " que sobrevivió el filtro no es el día 1 real del pairing (día 1 real = " + diaDutyMinRealPorTrip[trip] + ", cayó fuera de mes/ruta)");
+      return;
+    }
 
     var dia1 = grupo.filter(function (p) { return p.diaDuty === diaMin; }).sort(function (a, b) { return a.stdDt - b.stdDt; });
-    if (dia1.length < 2) return;
-    if ([6, 8, 10].indexOf(dia1.length) !== -1) return;
+    if (dia1.length < 2) { excluir(trip, "día 1 sin vuelta el mismo día (1 solo tramo)"); return; }
+    if ([6, 8, 10].indexOf(dia1.length) !== -1) { excluir(trip, "día 1 tiene " + dia1.length + " tramos -> no se toma"); return; }
 
     var ida = dia1[0], vuelta = dia1[1];
-    if (ida.dep !== "LIM") return;
-    if (vuelta.arr !== "LIM") return;
-    if (vuelta.dep !== ida.arr) return; // ruta triangular
+    if (ida.dep !== "LIM") { excluir(trip, "el primer tramo no sale de LIM"); return; }
+    if (vuelta.arr !== "LIM") { excluir(trip, "el segundo tramo del día 1 no vuelve a LIM"); return; }
+    if (vuelta.dep !== ida.arr) { excluir(trip, "vuelta sale de " + vuelta.dep + " pero la ida llegó a " + ida.arr + " (ruta triangular)"); return; }
 
-    if ((ida.stdDt - ida.fechaDt) <= HORA_MIN_SALIDA_MS_) return;
-    if (ida.hbtMs <= HBT_MIN_MS_) return;
-    if (vuelta.hbtMs <= HBT_MIN_MS_) return;
-
+    var motivos = [];
+    if ((ida.stdDt - ida.fechaDt) <= HORA_MIN_SALIDA_MS_) motivos.push("sale antes/igual a 08:30");
+    if (ida.hbtMs <= HBT_MIN_MS_) motivos.push("HBT ida <= 1h");
+    if (vuelta.hbtMs <= HBT_MIN_MS_) motivos.push("HBT vuelta <= 1h");
     var conexionMs = vuelta.stdDt - ida.staDt;
-    if (conexionMs <= 0) return;
+    if (conexionMs <= 0) motivos.push("conexión interna negativa/cero");
     var psvMs = vuelta.staDt - ida.stdDt;
-    if (psvMs > PSV_MAX_MS_) return;
+    if (psvMs > PSV_MAX_MS_) motivos.push("PSV > 11h");
+    if (motivos.length > 0) { excluir(trip, motivos.join("; ")); return; }
 
     validos.push({
       fecha: formatearDDMMYYYY_(ida.fechaDt), diaSem: ida.diaSemana, pairingId: trip,
       vueloIda: ida.vuelo, dep: ida.dep, arr: ida.arr, stdIda: ida.std, staIda: ida.sta, hbtIda: ida.hbt,
       vueloVuelta: vuelta.vuelo, depVta: vuelta.dep, arrVta: vuelta.arr, stdVuelta: vuelta.std, staVuelta: vuelta.sta, hbtVuelta: vuelta.hbt,
-      subFlota: ida.subFleet, _ordenTs: ida.stdDt.getTime(), _idaStdTs: ida.stdDt.getTime(), _vueltaStaTs: vuelta.staDt.getTime(),
+      subFlota: ida.subFleet, conexionMs: conexionMs, psvMs: psvMs,
+      _ordenTs: ida.stdDt.getTime(), _idaStdTs: ida.stdDt.getTime(), _vueltaStaTs: vuelta.staDt.getTime(),
     });
   });
 
@@ -543,7 +872,15 @@ function armarPrimerasMitadesNB_(piernasFiltradas, diaDutyMinRealPorTrip) {
     row.posible2do = posibles.join(", ");
   });
 
-  return validos;
+  return { validos: validos, excluidos: excluidos };
+}
+
+function formatearDuracionHhMm_(ms) {
+  if (ms === undefined || ms === null) return "";
+  var signo = ms < 0 ? "-" : "";
+  var totalMin = Math.round(Math.abs(ms) / 60000);
+  var h = Math.floor(totalMin / 60), m = totalMin % 60;
+  return signo + h + ":" + String(m).padStart(2, "0");
 }
 
 function parearCandidatosNB_(validos) {

@@ -463,6 +463,248 @@ Not yet deployed/verified against real BigQuery or real Drive — Fernando needs
 files into an Apps Script project, add `WebAppPairingsForm.html` as an HTML-type file with that
 exact name, and deploy via Implementación > Nueva implementación > Aplicación web.
 
+### Web App extended + rules doc written (2026-10-03, same thread)
+
+Two follow-ups to the urgent Web App request above, both completed:
+1. Fixed a real deploy bug: Fernando deployed `8. Web App Pairings.gs` into a *different* Apps
+   Script project than the one holding `5. buscar vuelos B767/B787.gs`, so the shared helpers
+   (`cargarYFiltrarWB_`, `armarPairingsPorPk_`, `parsearFechaHoraBQ_`, `formatearDDMMYYYY_`,
+   `DIAS_SEMANA_ES_`) weren't in scope → `ReferenceError`. Fixed by inlining copies of those
+   5 definitions directly into `8. Web App Pairings.gs`, making it fully standalone/portable
+   regardless of which project it's deployed into (verified in Node by loading *only* that one
+   file). Also hit (and fixed, documented in that file's history) a missing BigQuery OAuth
+   scope — `appsscript.json` needs an explicit `oauthScopes` array
+   (`bigquery`/`spreadsheets`/`drive`) even with the BigQuery advanced service enabled, since
+   Apps Script's scope auto-detection didn't pick it up; re-authorizing via "Ejecutar" on any
+   function in the editor after updating the manifest fixed it.
+2. Added two more sheets per Fernando's request: **"Candidatos"** (flat list of every valid
+   pairing — for NB, the same shape as `generar_candidatos_nb.py`'s "Candidatos_validos" output,
+   with formatted Conexión/PSV and the alternates column; for WB, one row per full pairing) and,
+   NB-only, **"Excluidos"** (every rejected trip + its exact reason, ported 1:1 from that
+   script's exclusion messages — `armarPrimerasMitadesNB_` now returns `{validos, excluidos}`
+   instead of just the valid list). WB doesn't get an Excluidos sheet since its filter is
+   leg-level, not trip-level with a tracked reason — flagged as addable later if wanted, not
+   invented now.
+
+Also wrote **`docs/Reglas_Filtrado_Pairings_WebApp.md`** — a comprehensive, Fernando-readable
+explainer of every filtering rule for both fleets (requested directly: "quiero que... me des
+paso a paso el resumen... qué filtras, qué no filtras... todas las reglas"), including a direct
+NB-vs-WB comparison table answering his specific questions (weekday filtering, max pairing
+duration, 1-vs-2-pairings-per-block, hour/HBT/PSV thresholds). Notable finding surfaced while
+writing it: **NB has no day-of-week filter at the candidate level** (Sat/Sun pairings aren't
+excluded here — the "prefer Thu/Fri" guidance only applies later, at Matriz slot assignment),
+which is a real, confirmed asymmetry with WB (which does exclude Sat/Sun per-leg) — worth
+remembering since it's easy to assume both fleets behave the same way.
+
+QA'd the two new sheets in Node: NB's Candidatos/Excluidos correctly separated a 2-pairing
+combinable block from two synthetically-broken trips (short HBT, single-leg day) with the exact
+expected rejection reasons, Conexión/PSV rendered as "h:mm" text (not raw milliseconds or
+`undefined`); WB's Candidatos correctly listed one full pairing per row.
+
+### Live preview added to the Web App (2026-10-03)
+
+Fernando showed an internal LATAM BI tool (filters → live result table on the same page) and
+asked for something similar: filter first, see the candidate list right there, *then* decide to
+generate the file. Didn't try to replicate that tool's full filter set (Filial/Llave
+carga/Fecha carga/service_type/etc. — those are BigQuery load-tracking metadata the existing
+`QUALIFY` clause already resolves automatically by always picking the latest load, so exposing
+them wouldn't add real value here) — instead added a **"Vista previa"** button alongside
+"Generar Sheet" in the same form.
+
+Refactored `generarNB_`/`generarWBGenerico_` to split candidate computation from sheet-writing:
+new `calcularCandidatosNB_()`/`calcularCandidatosWB_()` return the same `{validos, excluidos}`/
+`{pairingsPorPk}` shapes without touching any Spreadsheet, and both the preview and the real
+generator call them. New `previsualizarPairingsWebApp(mes, flota)` returns a plain
+`{flota, columnas, filas, excluidosCount}` object (JSON-safe, no Date objects) that the HTML
+renders as an in-page scrollable table — no new Sheet/Drive file created for a preview, only
+when "Generar Sheet" is explicitly pressed. QA'd in Node: preview returns the right shape and
+row count without ever calling `SpreadsheetApp`/`DriveApp`.
+
+### Corrected: "vista previa" meant raw data browse, not filtered candidates (2026-10-03)
+
+Fernando clarified (after seeing the candidatos-only preview) that what he actually wanted,
+based on the reference BI tool, was a **raw, unfiltered data browser** with simple checkbox
+filters (Subflota, Tipo de carga) showing the FULL row count (he gave concrete numbers: 665 WB
+rows total, narrowing to 130 when checking only subflota 787/788/789) — not the already-LCK-
+rule-filtered candidate list. These are two genuinely different views and both now exist side
+by side in the Web App:
+- **"Vista previa (candidatos)"** — unchanged, still the LCK-business-rule-filtered list.
+- **"Base de datos original"** (new) — `previsualizarBaseDatosOriginal(mes, subflotas[],
+  tiposCarga[])` / `consultarBaseDatosOriginal_()`: a plain BigQuery query with NO LCK filtering
+  at all (no route/HBT/PSV/connection/day-of-week checks) — only `subsidiary_code='LP'` (hardcoded,
+  matching every other query in this project) + checkbox-selected `subfleet_code` + checkbox-
+  selected `load_type_code`, same latest-load `QUALIFY` as everywhere else. Rendered via
+  multi-select checkboxes (with "marcar todas"/"desmarcar todas" links) for Subflota
+  (319/320/321/330/763/773/788/789) and Tipo de carga (FP/ES), reusing the same Mes dropdown.
+
+QA'd in Node: confirmed the query correctly includes only the checked subflotas/tipos in its
+`IN (...)` clauses, returns ALL matching rows with no business-rule filtering applied, and
+throws a clear error if either checkbox group is left fully unchecked (client-side JS also
+blocks the call before hitting the server, for immediate feedback).
+
+## Web App unified flow + real "Flota" facet filter (2026-10-03)
+
+Replaced the single Flota `<select>` dropdown with a unified panel (Mes → Filial → Flota →
+Subflota → Tipo de carga checkboxes) and 3 progressive buttons (Ver vista previa → Generar
+candidatos → Generar Google Sheet), all in `8. Web App Pairings.gs` +
+`WebAppPairingsForm.html`. Server: `identificarGruposFlota_(subflotas)` maps the Subflota
+checkbox selection to NB/B767/B787 rule-groups; `previsualizarCandidatosDesdeFiltros` and
+`generarPairingsDesdeFiltros` replaced the old single-flota `previsualizarPairingsWebApp`/
+`generarPairingsWebApp` (deleted) and combine/generate across every recognized fleet-group in
+one go (one new Spreadsheet, `"Vuelos <clave>"`/`"Resumen <clave>"`/`"Candidatos <clave>"` +
+`"Excluidos <clave>"` for NB, per group).
+
+**Bug found right after, by Fernando comparing against the reference BI tool**: "Flota" and
+"Subflota" are TWO INDEPENDENT real BigQuery columns (`fleet_type_code` vs `subfleet_code`),
+not one derived from the other — the reference tool showed Flota=NB + Subflota=788/789 → 12
+registros (a real, if "weird", intersection), while this Web App was ignoring Flota entirely
+and showing 270 (all rows for Subflota 788/789 regardless of Flota). Fixed by:
+- Exposing `fleet_type_code AS flota` as a REAL filter column everywhere (`consultarBaseDatosOriginal_`,
+  `consultarBigQueryNB_`, `consultarBigQueryWBGenerico_`), applied as `AND fleet_type_code IN (...)`
+  in AND with Subflota/Filial/Tipo de carga — threaded as a new `flotas` param through
+  `calcularCandidatosNB_`/`calcularCandidatosWB_`/`generarNB_`/`generarWBGenerico_`/
+  `previsualizarCandidatosDesdeFiltros`/`generarPairingsDesdeFiltros`. `FLOTAS_DISPONIBLES_ =
+  ["NB","WB","E02","B787","B767"]` (the real values from the reference tool's Flota dropdown).
+- New `obtenerRegistrosCrudosMes(mesStr)` / `consultarBaseDatosCrudaMesCompleto_`: fetches the
+  ENTIRE month ONE time (only date range + `crew_range_type_code='SAB'`, no other filter) so the
+  client can do true Looker-style faceted cross-filtering without hitting BigQuery again on every
+  checkbox click.
+- `WebAppPairingsForm.html` rewritten: "Ver vista previa" now does that one full-month fetch;
+  after that, toggling any Filial/Flota/Subflota/Tipo-de-carga checkbox recomputes (client-side,
+  in `recalcularFacetas()`) which OTHER checkboxes still have ≥1 matching record given what's
+  currently checked in the other 3 dimensions — shows a live `(count)` next to each option, hides
+  (and auto-unchecks) options that would yield 0 — and re-renders the live-filtered table
+  instantly, matching the "si seleccionas uno y no existe en otro filtro se desaparece" behavior
+  Fernando described from the reference tool. Also fixed a pre-existing latent bug noticed while
+  touching `generarNB_`: it never forwarded the group's `subflotasNB` into `calcularCandidatosNB_`
+  (always silently defaulted to `['319','320']`) — now passed through correctly.
+
+QA'd in Node (`vm` + mocked `BigQuery.Jobs.query` capturing the generated SQL text): confirmed
+`previsualizarBaseDatosOriginal` only adds the `fleet_type_code IN (...)` clause when `flotas` is
+passed and non-empty, and both `previsualizarCandidatosDesdeFiltros`/`generarPairingsDesdeFiltros`
+correctly thread `flotas` into the NB and WB queries respectively.
+
+## Facet "Ver vista previa" crashed with OOM — moved aggregation into BigQuery (2026-10-03, same day)
+
+`obtenerRegistrosCrudosMes()` (the full-month-no-filter download for client-side faceting,
+described just above) **crashed in production**: Fernando's real run failed after 85s with
+"Error provocado por memoria insuficiente". Root cause: `crew_range_type_code='SAB'` + date
+range with NO subsidiary/subfleet/fleet filter at all pulls the ENTIRE airline's crew-pairing
+leg data (all 6 filiales × every subfleet) for 2 months — tens/hundreds of thousands of rows —
+into Apps Script's V8 heap, which cannot hold that (and `ejecutarQueryBigQuery_`'s pagination
+loop uses `.concat()` per page, making it worse). "Download once, filter client-side" does not
+scale against this table; deleted `obtenerRegistrosCrudosMes`/`consultarBaseDatosCrudaMesCompleto_`
+entirely (also deleted the now-dead `previsualizarBaseDatosOriginal`/`consultarBaseDatosOriginal_`
+that `obtenerRegistrosCrudosMes` was replacing in the UI anyway).
+
+Replaced with **server-side aggregation**: new `obtenerFacetasYVistaPrevia(mesStr, filiales,
+flotas, subflotas, tiposCarga)` / `consultarFacetasYVistaPrevia_()` in `8. Web App Pairings.gs`.
+One BigQuery call does the faceting — 4 `UNION ALL` branches (one per dimension: filial/flota/
+subflota/tipoCarga), each `GROUP BY` its own column while filtering by the OTHER 3 dimensions'
+*current* selections (never its own) — returning only ~20-30 aggregate rows regardless of table
+size, since the counting happens inside BigQuery, not in Apps Script memory. A second query
+returns the live-filtered preview, capped at `LIMIT 300`, with the TRUE total carried via
+`COUNT(*) OVER()` (a window function, evaluated before `LIMIT` in BigQuery's semantics, so the
+total reflects every matching row even though only 300 are returned). Both queries share a
+`QUALIFY_ULTIMA_CARGA_SQL_` constant (new) for the latest-load dedup, and a `WITH deduped AS (...)`
+CTE computed once per call.
+
+`WebAppPairingsForm.html` changed from "fetch once, filter in JS" to "every checkbox change
+calls `obtenerFacetasYVistaPrevia` again" (a real BigQuery round-trip per click, a few seconds —
+this *is* how Looker/real faceted-search tools actually work against big tables, not a step
+back). Added `requestIdFacetas` (monotonic counter) so a stale response arriving after the user
+already clicked something else is discarded instead of overwriting newer state.
+
+QA'd in Node (`vm` + mocked `BigQuery.Jobs.query`): confirmed the facet query for each dimension
+excludes its own filter but includes the other 3, confirmed the preview query has `LIMIT 300`
+and `COUNT(*) OVER()`, and confirmed the `.gs`/inline-`<script>` both parse cleanly
+(`node --check`).
+
+## Filter options must come from real DB values, not hand-typed lists; "Tipo de carga" removed as a filter (2026-10-03, same day)
+
+Fernando compared the Web App against the reference BI tool side by side (screenshots showing
+its real "Flota" checkbox list and the official `fleet_type_code` column description he pasted:
+`description: "Indica la flota... Puede tomar valores como: NB, B787."`) and caught that my
+hand-typed `FLOTAS_DISPONIBLES_ = ["NB","WB","E02","B787","B767"]` was wrong — **"E02" is
+actually a `subfleet_code` (Sub flota) value, not a `fleet_type_code` (Flota) value**; I had
+guessed it into the wrong dimension. His instruction: "no quiero que... pongas NB o WB de
+acuerdo a lo que yo te estoy diciendo, pon de acuerdo a lo que está en la base de datos" — stop
+hand-typing filter option lists, always derive them from what's actually distinct in the table.
+
+Fixed in `8. Web App Pairings.gs` + `WebAppPairingsForm.html`: deleted the hardcoded
+`FILIALES_DISPONIBLES_`/`SUBFLOTAS_DISPONIBLES_`/`FLOTAS_DISPONIBLES_` constants entirely. The
+HTML now calls `obtenerFacetasYVistaPrevia(mes, [], [], [])` (all 3 filters empty) on page load
+and on every Mes change — the unfiltered facet counts ARE the real distinct value lists per
+dimension — and builds the Filial/Flota/Sub flota checkboxes dynamically from that response
+(`cargarOpcionesDeFiltro()`), instead of static `<label>` markup. "LP" is pre-checked by default
+only if it's actually among the real returned Filial values (never assumed).
+
+Same conversation, second instruction: "el tipo de cargas que sea solamente FP... quita el tipo
+de carga... esto tiene que estar siempre buscar el FP" — removed "Tipo de carga" as a
+selectable filter entirely (UI checkboxes gone, `tiposCarga` parameter removed from every
+function in the file: `obtenerFacetasYVistaPrevia`, `consultarFacetasYVistaPrevia_`,
+`calcularCandidatosNB_`/`WB_`, `generarNB_`/`WBGenerico_`, `consultarBigQueryNB_`/
+`WBGenerico_`, `previsualizarCandidatosDesdeFiltros`, `generarPairingsDesdeFiltros`) along with
+the `AND load_type_code IN (...)` WHERE clause that selectability added. Deliberately did NOT
+touch the underlying `QUALIFY_ULTIMA_CARGA_SQL_` dedup logic (latest load, FP preferred, ES only
+as fallback when no FP exists for that partition) — that already *is* "siempre buscar el FP",
+and removing the ES fallback entirely would risk silently dropping months/subsidiaries where
+only an ES load has landed so far, which Fernando did not ask for.
+
+QA'd in Node (`vm` + mocked `BigQuery.Jobs.query`): confirmed `obtenerFacetasYVistaPrevia`'s
+facet result has only `{filial, flota, subflota}` keys (no `tipoCarga`), confirmed its
+UNION-ALL query has exactly 3 branches and never mentions `load_type_code`, confirmed the NB and
+WB candidate queries no longer add a `load_type_code IN (...)` clause while still carrying the
+`load_type_code = 'FP'` QUALIFY preference, and confirmed `generarPairingsDesdeFiltros` still
+works end-to-end with the new 4-argument signature. `node --check` clean on both the `.gs` file
+and the extracted inline `<script>`.
+
+## Bug: Flota filter silently zeroed out WB candidates when Subflota spans multiple fleets (2026-10-04)
+
+Fernando checked Flota=NB only, but Sub flota had all 5 real values checked (319/320/763/788/789
+— likely via "Marcar todas", since 763/788/789 DO have a handful of genuinely real matching rows
+under flota=NB too, ~3-4 each — confirmed by him in the prior message, not invented noise).
+Result: "Generar candidatos" came back with 0 total, "81 excluido(s) (NB)" and nothing from the
+B767/B787 groups, with no explanation of why WB came back empty.
+
+Root cause: `flotas` (the Flota checkbox selection) had been threaded all the way into
+`previsualizarCandidatosDesdeFiltros`/`generarPairingsDesdeFiltros` and from there into EVERY
+rule-group's BigQuery query uniformly — `calcularCandidatosNB_`/`WB_`, `generarNB_`/
+`WBGenerico_`, `consultarBigQueryNB_`/`WBGenerico_`. Routing to NB/B767/B787 is driven 100% by
+which *Subflotas* are checked (`identificarGruposFlota_`, unaffected by Flota). But the SAME
+`flotas=['NB']` filter then got applied to the B767/B787 groups' queries too — i.e. "subfleet_code
+IN ('763') AND fleet_type_code IN ('NB')" — and real B767 flights overwhelmingly have
+`fleet_type_code='WB'`, not `'NB'`, so that query returned (near-)zero rows every time, silently,
+with no distinguishing error message. This is a direct consequence of Flota and Subflota being
+genuinely independent real columns (see the facet-filter work above) — mixing them into one
+filter across unrelated rule-groups was never going to work.
+
+Fix: removed `flotas` entirely from the candidate-generation/generate-sheet pipeline — it now
+stays ONLY in `obtenerFacetasYVistaPrevia`/`consultarFacetasYVistaPrevia_` (raw "Ver vista
+previa" browsing, where it's a real independent cross-filter against Subflota, exactly as
+designed). `previsualizarCandidatosDesdeFiltros(mesStr, filiales, subflotas)` and
+`generarPairingsDesdeFiltros(mesStr, filiales, subflotas)` are back to 3 params; which
+rule-group runs is determined ONLY by Subflota, same as the original design before Flota got
+over-extended into this stage. Also clarified in the HTML's intro text that Flota only matters
+for step 1, not steps 2/3.
+
+Separately confirmed (not a bug) that the 10,822-leg "NB" preview total Fernando flagged as
+suspicious *was* already correctly filtered to Filial=LP — it's a LEG-level count across the
+2-month preview window (not pairing/candidate-level), and its own checkbox counts summed exactly
+to it (2400+8412+4+3+3=10822), proving the filter was working; it's just a fundamentally
+different, much larger number than "LCK candidates after business rules" (10822 raw legs vs. 81
+NB trips evaluated vs. 0 that passed every rule) — these are three different stages, not a
+contradiction. Whether 0 valid NB candidates for Nov-2026/LP is itself expected needs Fernando to
+check the "Excluidos NB" sheet (only visible after actually generating the Sheet, step 3) — the
+`previsualizarCandidatosDesdeFiltros` preview only surfaces an aggregate excluded-count, not the
+per-trip reasons.
+
+QA'd in Node (`vm` + mocked `BigQuery.Jobs.query`): reproduced Fernando's exact filter
+combination (subflotas 319/320/763/788/789, no flota threaded) and confirmed the B767 WB query no
+longer carries any `fleet_type_code IN (...)` clause and correctly returns a synthetic matching
+candidate; confirmed both `previsualizarCandidatosDesdeFiltros` and `generarPairingsDesdeFiltros`
+are back to arity 3. `node --check` clean on both files.
+
 **Open question for next session**: whether the Freeze destination found 2026-09-24
 (`Matriz_Octubre_2026` tabs "LCK 767" gid `1188477249` / "LCK 787" gid `1779651341`, roster
 A1:G1 `BP/CAT/Nombre/Estado/Vigencia/Comentario/Grupo`, alt CUADRO FINAL table at `L5`) and the
